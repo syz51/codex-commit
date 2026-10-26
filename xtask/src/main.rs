@@ -333,7 +333,6 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
         r##"class CodexCommit < Formula
   desc "Commit Git changes with Codex Luna at Max reasoning, with optional push"
   homepage "https://github.com/syz51/codex-commit"
-  version "{version}"
   license "MIT"
 
   depends_on "git"
