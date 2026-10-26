@@ -1,26 +1,71 @@
 # codex-commit
 
 [![CI](https://github.com/syz51/codex-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/syz51/codex-commit/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/codex-commit.svg)](https://crates.io/crates/codex-commit)
 
-One command to inspect and commit your existing Git changes with **GPT-6 Luna at Max reasoning**. Add `--push` to push afterward. A small, dependency-free shell wrapper around Codex CLI.
+One command to inspect and commit your existing Git changes with **GPT-6 Luna at Max reasoning**. Add `--push` to push afterward. A small Rust executable that launches Codex CLI with direct terminal output and normal signal handling.
 
 ```sh
 codex-commit
 ```
 
-Codex shows status, diff summaries, commands, and progress as it works. Each run creates a saved Codex CLI session.
+Each run creates a saved Codex CLI session. The Rust executable has no third-party Rust dependencies and supports macOS and Linux.
 
 ## Install
 
-Requires a POSIX shell, Git, and [Codex CLI](https://developers.openai.com/codex/cli/) with access to `gpt-6-luna`. Authenticate with `codex login` and configure your normal Git identity first. A remote and Git push credentials are needed only with `--push`; commit-only mode does not require them. Tested with Codex CLI 0.164.0.
+All installation methods require Git and [Codex CLI](https://developers.openai.com/codex/cli/) with access to `gpt-6-luna`. Authenticate with `codex login` and configure your Git identity first. A remote and push credentials are needed only with `--push`. Tested with Codex CLI 0.164.0.
+
+### Homebrew on macOS
+
+```sh
+brew install syz51/tap/codex-commit
+```
+
+The [tap](https://github.com/syz51/homebrew-tap) selects the prebuilt Apple Silicon or Intel executable for your Mac. It installs Git as a dependency; install Codex CLI separately. Upgrade with `brew upgrade syz51/tap/codex-commit`.
+
+### Cargo
+
+With Rust 1.85 or newer installed:
+
+```sh
+cargo install codex-commit --locked
+```
+
+Cargo compiles the published source for your machine and normally installs into `~/.cargo/bin`. Run the command again to install a newer published version. No Rust installation is needed for the Homebrew or prebuilt downloads.
+
+### Prebuilt macOS downloads
+
+Download the matching archive and `SHA256SUMS` from [v0.2.0](https://github.com/syz51/codex-commit/releases/tag/v0.2.0):
+
+| Mac | Archive |
+| --- | --- |
+| Apple Silicon (M-series) | [`codex-commit-v0.2.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.0/codex-commit-v0.2.0-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.2.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.0/codex-commit-v0.2.0-x86_64-apple-darwin.tar.gz) |
+
+For example, on Apple Silicon:
+
+```sh
+release=https://github.com/syz51/codex-commit/releases/download/v0.2.0
+archive=codex-commit-v0.2.0-aarch64-apple-darwin.tar.gz
+curl -fLO "$release/$archive"
+curl -fLO "$release/SHA256SUMS"
+grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
+tar -xzf "$archive"
+mkdir -p ~/.local/bin
+install -m 755 codex-commit ~/.local/bin/codex-commit
+```
+
+Use the Intel archive name instead on an Intel Mac. Make sure your installation directory is on `PATH`. Releases include checksums, and published release assets are immutable.
+
+### From source
 
 ```sh
 git clone https://github.com/syz51/codex-commit.git
 cd codex-commit
-make install
+cargo install --path . --locked
 ```
 
-This installs `codex-commit` in `~/.local/bin`; add that directory to your `PATH` if needed. To choose another location, use `make install PREFIX=/usr/local`. `DESTDIR` is supported for packaging. No Codex or shell configuration is changed.
+Alternatively, `make install` builds a release executable and installs into `~/.local/bin`. `PREFIX` and `DESTDIR` are supported for custom locations and packaging. No Codex or shell configuration is changed.
 
 ## Use
 
@@ -34,17 +79,17 @@ codex-commit --interactive                # interactive Codex with approval prom
 codex-commit 2>&1 | tee codex-commit.log   # capture progress and final output
 ```
 
-Options precede the optional instructions. Use `--` before instructions that begin with a dash. The command runs from the repository root, including when invoked in a subdirectory. Bare repositories and detached HEADs are rejected.
+Options precede optional instructions. Use `--` before instructions beginning with a dash. The command runs from the repository root, including when invoked in a subdirectory. Bare repositories and detached HEADs are rejected.
 
 The default mode runs unattended and exits when Codex finishes. It grants Codex full local command access so it can update Git metadata. Run it only in repositories you trust. `--interactive` instead uses the workspace-write sandbox and Codex permission prompts; its terminal stays open for follow-up messages. Both modes explicitly select the normal service tier, without enabling Fast mode.
 
 The task asks Codex to inspect staged, unstaged, and untracked changes; follow repository instructions; run relevant checks; and commit existing intended changes without rewriting history. By default its final policy forbids pushing, publishing, fetching, or pulling, even when repository or additional instructions mention pushing. Rerun with `--push` to enable pushing.
 
-With `--push`, the task also asks Codex to push the current branch without force. It can push existing local commits from a clean worktree. With no upstream, it may set one only when `origin` is the sole remote. Both push modes are prompt policies, not OS-enforced network or Git restrictions; review the streamed output.
+With `--push`, Codex can push existing local commits from a clean worktree. With no upstream, it may set one only when `origin` is the sole remote. Both push modes are prompt policies, not OS-enforced network or Git restrictions; review the streamed output.
 
-Progress streams directly to stderr, and the final response goes to stdout in unattended mode. **Ctrl-C interrupts Codex**; normal signals and exit status pass through because the wrapper replaces itself with Codex. Cancellation cannot undo a commit or push that already completed. Inspect `git status` and `git log` before retrying an interrupted run.
+Progress streams directly to stderr, and the final response goes to stdout in unattended mode. **Ctrl-C interrupts Codex**. The Rust process replaces itself with Codex on Unix, preserving terminal streams, process identity, and exit status. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
 
-Use the session ID printed by Codex to continue an unattended run interactively:
+Use the session ID printed by Codex to continue a run interactively:
 
 ```sh
 codex resume --include-non-interactive SESSION_ID
@@ -55,13 +100,13 @@ For the underlying contracts, see the official [Luna model documentation](https:
 ## Development
 
 ```sh
-make check
-make lint  # requires ShellCheck
-make test  # requires uv and Python
+make check  # rustfmt and Clippy
+make test   # Rust tests and Python integration tests; requires uv
+uv run --no-project python -B -m unittest discover -s scripts/tests -v
 ```
 
-CI runs the integration tests and installation checks on Linux and macOS, with shell linting on Linux. The automated tests use a mock Codex executable and real disposable Git repositories; they do not call a model or require credentials.
+CI tests native Linux, Apple Silicon macOS, and Intel macOS, including installation. Automated tests use a mock Codex executable, real disposable Git repositories, and real terminal signals; they do not call a model or require credentials. Release builds execute and check each native Mac binary before packaging.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and [SECURITY.md](SECURITY.md) for private vulnerability reports.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [release procedures](docs/RELEASING.md), [CHANGELOG.md](CHANGELOG.md), and [SECURITY.md](SECURITY.md).
 
 [MIT licensed](LICENSE). Not affiliated with OpenAI.

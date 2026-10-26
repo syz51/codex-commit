@@ -1,0 +1,11 @@
+Inspect the existing changes in this Git repository and commit them sensibly.
+
+Read and follow the applicable AGENTS.md instructions first. Show git status and a summary of both staged and unstaged diffs in the terminal before committing. Inspect relevant untracked files as well. Explain what you intend to commit and stream progress, commands, and their results as you work.
+
+Honor the scope in any additional instructions below. Otherwise include the existing intended changes, including relevant untracked files; do not include secrets, credentials, generated junk, or unrelated files. Do not edit source files unless the additional instructions explicitly ask for edits. Do not discard existing work. Run the smallest meaningful checks required by the repository and stop if they fail.
+
+Create a clear commit message based on the actual diff. Preserve existing commits and hooks. Do not amend, rebase, reset, clean, force-push, bypass hooks, or rewrite history. Do not add AI attribution, co-author trailers, generated-by footers, or session links.
+
+Do not create or switch branches or open pull requests. Do not create an empty commit. Committing does not require a remote or network access.
+
+Finish with the commit SHA(s), a short change summary, and checks performed. Only report a successful commit after observing it succeed. If nothing needs committing, say so.

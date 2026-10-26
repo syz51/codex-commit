@@ -17,22 +17,38 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Configure build directories
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
+          echo "CODEX_COMMIT_TEST_TMPDIR=$RUNNER_TEMP/codex-commit-tests" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
+        with:
+          python-version: '3.15.2'
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: '0.13.5'
-          python-version: '3.13'
+          python-version: '3.15.2'
           enable-cache: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
       - name: Run integration tests
+        env:
+          UV_PYTHON: ${{ steps.python.outputs.python-path }}
         run: make test
+      - name: Test distribution helpers
+        env:
+          UV_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: uv run --no-project python -B -m unittest discover -s scripts/tests -v
       - name: Verify staged installation
         shell: sh
         run: |
@@ -41,23 +57,29 @@ jobs:
           make install PREFIX=/usr/local DESTDIR="$staging"
           executable="$staging/usr/local/bin/codex-commit"
           test -x "$executable"
-          cmp bin/codex-commit "$executable"
+          cmp "$CARGO_TARGET_DIR/release/codex-commit" "$executable"
           "$executable" --help
           "$executable" --version
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Ensure ShellCheck is installed
+      - name: Configure build directory
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - name: Check formatting and Clippy
+        run: make check
+      - name: Verify minimum supported Rust version
         run: |
-          if ! command -v shellcheck >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install --no-install-recommends -y shellcheck
-          fi
-      - name: Lint shell script
-        run: make lint
+          rustup toolchain install 1.85.0 --profile minimal
+          cargo +1.85.0 check --locked
+      - name: Check release helper syntax
+        run: sh -n scripts/package-release.sh
+      - name: Verify Cargo package
+        run: cargo publish --dry-run --locked
