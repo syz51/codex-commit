@@ -11,7 +11,20 @@ readme = "README.md"
 authors = ["syz51"]
 keywords = ["codex", "git", "commit", "cli", "automation"]
 categories = ["command-line-utilities", "development-tools"]
-include = ["Cargo.toml", "Cargo.lock", "src/**", "README.md", "LICENSE"]
+include = ["Cargo.toml", "Cargo.lock", "src/**", "tests/**/*.rs", "README.md", "LICENSE"]
+
+[workspace]
+members = ["xtask"]
+resolver = "3"
+
+[dev-dependencies]
+nix = { version = "0.31.3", features = ["fs", "ioctl", "process", "signal", "term"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+
+[[example]]
+name = "mock-codex"
+path = "tests/support/mock_codex.rs"
 
 [profile.release]
 lto = true

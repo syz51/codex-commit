@@ -6,10 +6,10 @@ export CARGO_TARGET_DIR
 .PHONY: build release install check lint test
 
 build:
-	cargo build --locked
+	cargo build --locked --package codex-commit
 
 release:
-	cargo build --release --locked
+	cargo build --release --locked --package codex-commit
 
 install: release
 	install -d "$(DESTDIR)$(PREFIX)/bin"
@@ -17,10 +17,9 @@ install: release
 
 check:
 	cargo fmt --all -- --check
-	cargo clippy --locked --all-targets -- -D warnings
+	cargo clippy --workspace --locked --all-targets -- -D warnings
 
 lint: check
 
-test: build
-	cargo test --locked
-	CODEX_COMMIT_BIN="$(abspath $(CARGO_TARGET_DIR))/debug/codex-commit" uv run --no-project python -B -m unittest discover -s tests -v
+test:
+	cargo test --workspace --locked

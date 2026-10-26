@@ -101,11 +101,12 @@ For the underlying contracts, see the official [Luna model documentation](https:
 
 ```sh
 make check  # rustfmt and Clippy
-make test   # Rust tests and Python integration tests; requires uv
-uv run --no-project python -B -m unittest discover -s scripts/tests -v
+make test   # Rust workspace unit, integration, terminal, and packaging tests
 ```
 
-CI tests native Linux, Apple Silicon macOS, and Intel macOS, including installation. Automated tests use a mock Codex executable, real disposable Git repositories, and real terminal signals; they do not call a model or require credentials. Release builds execute and check each native Mac binary before packaging.
+Development and release tooling use the pinned Rust 1.99.1 toolchain. Runtime code has no third-party Rust dependencies; tests and the private `xtask` release helper use development dependencies recorded in `Cargo.lock`. Run `cargo test --workspace --locked` directly if you do not use Make.
+
+CI tests native Linux, Apple Silicon macOS, and Intel macOS, including installation. Automated Rust tests use a mock Codex executable, real disposable Git repositories, and real terminal signals; they do not call a model or require credentials. Release builds execute and check each native Mac binary before packaging with `cargo xtask`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [release procedures](docs/RELEASING.md), [CHANGELOG.md](CHANGELOG.md), and [SECURITY.md](SECURITY.md).
 

@@ -30,25 +30,10 @@ jobs:
         run: |
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
           echo "CODEX_COMMIT_TEST_TMPDIR=$RUNNER_TEMP/codex-commit-tests" >> "$GITHUB_ENV"
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        id: python
-        with:
-          python-version: '3.15.2'
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          version: '0.13.5'
-          python-version: '3.15.2'
-          enable-cache: false
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
-      - name: Run integration tests
-        env:
-          UV_PYTHON: ${{ steps.python.outputs.python-path }}
+      - name: Run Rust workspace tests
         run: make test
-      - name: Test distribution helpers
-        env:
-          UV_PYTHON: ${{ steps.python.outputs.python-path }}
-        run: uv run --no-project python -B -m unittest discover -s scripts/tests -v
       - name: Verify staged installation
         shell: sh
         run: |
@@ -78,8 +63,6 @@ jobs:
       - name: Verify minimum supported Rust version
         run: |
           rustup toolchain install 1.85.0 --profile minimal
-          cargo +1.85.0 check --locked
-      - name: Check release helper syntax
-        run: sh -n scripts/package-release.sh
+          cargo +1.85.0 check -p codex-commit --locked
       - name: Verify Cargo package
-        run: cargo publish --dry-run --locked
+        run: cargo publish -p codex-commit --dry-run --locked
