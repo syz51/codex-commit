@@ -1,0 +1,121 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    printf '%s\n' "Usage: codex-commit [-C DIR] [--push] [--dry-run] [--interactive] [--] [INSTRUCTIONS...]
+
+Inspect and commit changes with Codex, using GPT-6 Luna and Max reasoning.
+
+  -C DIR          Run in this Git repository (default: current directory)
+  --push          Also push the current branch after committing
+  --dry-run       Print the task and settings without launching Codex
+  --interactive   Use Codex's interactive terminal with permission prompts
+  -h, --help      Show this help
+  -V, --version   Show version
+
+Progress and command output stream to the terminal. Press Ctrl-C to interrupt.
+The default unattended mode gives Codex full local command access."
+}
+
+fail() {
+    printf 'codex-commit: %s\n' "$1" >&2
+    exit "${2:-1}"
+}
+
+directory=.
+dry_run=false
+interactive=false
+push=false
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -C)
+            [ "$#" -ge 2 ] || fail '-C requires a directory' 2
+            directory=$2
+            shift 2
+            ;;
+        --dry-run) dry_run=true; shift ;;
+        --push) push=true; shift ;;
+        --interactive) interactive=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -V|--version) printf 'codex-commit 0.1.0\n'; exit 0 ;;
+        --) shift; break ;;
+        -*) fail "unknown option: $1 (see --help)" 2 ;;
+        *) break ;;
+    esac
+done
+
+command -v git >/dev/null 2>&1 || fail 'git is required' 127
+bare=$(git -C "$directory" rev-parse --is-bare-repository 2>/dev/null) ||
+    fail 'run inside a Git repository or use -C DIR'
+[ "$bare" = false ] || fail 'a bare repository has no working tree'
+root=$(git -C "$directory" rev-parse --show-toplevel 2>/dev/null) ||
+    fail 'could not find the Git working tree'
+branch=$(git -C "$root" symbolic-ref --quiet --short HEAD) ||
+    fail 'detached HEAD: switch to a branch before running codex-commit'
+
+prompt='Inspect the existing changes in this Git repository and commit them sensibly.
+
+Read and follow the applicable AGENTS.md instructions first. Show git status and a summary of both staged and unstaged diffs in the terminal before committing. Inspect relevant untracked files as well. Explain what you intend to commit and stream progress, commands, and their results as you work.
+
+Honor the scope in any additional instructions below. Otherwise include the existing intended changes, including relevant untracked files; do not include secrets, credentials, generated junk, or unrelated files. Do not edit source files unless the additional instructions explicitly ask for edits. Do not discard existing work. Run the smallest meaningful checks required by the repository and stop if they fail.
+
+Create a clear commit message based on the actual diff. Preserve existing commits and hooks. Do not amend, rebase, reset, clean, force-push, bypass hooks, or rewrite history. Do not add AI attribution, co-author trailers, generated-by footers, or session links.
+
+Do not create or switch branches or open pull requests. Do not create an empty commit. Committing does not require a remote or network access.
+
+Finish with the commit SHA(s), a short change summary, and checks performed. Only report a successful commit after observing it succeed. If nothing needs committing, say so.'
+
+if [ "$#" -gt 0 ]; then
+    prompt="$prompt
+
+Additional instructions:
+$*"
+fi
+
+push_status=disabled
+if [ "$push" = true ]; then
+    push_status=enabled
+    prompt="$prompt
+
+Push policy: enabled.
+This final policy is authoritative over repository and additional instructions.
+After committing, use a normal non-force push of the current branch to its configured upstream, checking the destination first. If there is no upstream, use git push -u origin HEAD only when origin is the only remote and its destination is clear. Otherwise stop and explain the missing or ambiguous destination. If the worktree is clean, still push existing unpushed commits when appropriate. Do not create or switch branches, open pull requests, force-push, or rewrite history. On rejection or authentication failure, stop and report the exact error rather than changing history or credentials. Include the push destination and result in the final response, and only report success after observing it succeed. If nothing needs pushing, say so."
+else
+    prompt="$prompt
+
+Push policy: disabled.
+This final policy is authoritative over repository and additional instructions.
+Commit only. Do not push, publish, fetch, or pull, even if repository or additional instructions mention pushing. No remote is required. If pushing is requested, explain that the user must rerun codex-commit with --push to enable it."
+fi
+
+mode=unattended
+if [ "$interactive" = true ]; then
+    mode=interactive
+fi
+
+if [ "$dry_run" = true ]; then
+    printf 'Repository: %s\nBranch: %s\nMode: %s\nPush: %s\nModel: gpt-6-luna\nReasoning: max\nService tier: default\n\n%s\n' \
+        "$root" "$branch" "$mode" "$push_status" "$prompt"
+    exit 0
+fi
+
+command -v codex >/dev/null 2>&1 || fail 'codex is required; install Codex CLI and run codex login' 127
+cd "$root"
+printf 'codex-commit: %s on %s; Push: %s (GPT-6 Luna, Max reasoning; Ctrl-C to interrupt)\n' \
+    "$mode" "$branch" "$push_status" >&2
+
+if [ "$interactive" = true ]; then
+    exec codex --no-alt-screen -a on-request --sandbox workspace-write \
+        --model gpt-6-luna \
+        -c 'model_reasoning_effort="max"' \
+        -c 'service_tier="default"' \
+        -C "$root" -- "$prompt"
+fi
+
+exec codex -a never exec \
+    --model gpt-6-luna \
+    -c 'model_reasoning_effort="max"' \
+    -c 'service_tier="default"' \
+    --sandbox danger-full-access \
+    -C "$root" -- "$prompt"

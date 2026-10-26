@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible problem with codex-commit.
+body:
+  - type: markdown
+    attributes:
+      value: Remove credentials, private repository content, and personal details from all output. Use private vulnerability reporting for security issues.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions and operating system
+      description: Include codex-commit --version, codex --version, and your operating system.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Command and steps to reproduce
+      description: Prefer a small disposable Git repository.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+      description: Include relevant sanitized terminal output.
+    validations:
+      required: true

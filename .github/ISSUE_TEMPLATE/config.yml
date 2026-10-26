@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/syz51/codex-commit/security/advisories/new
+    about: Do not include credentials or sensitive repository content in a public issue.
