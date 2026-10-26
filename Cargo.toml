@@ -1,0 +1,20 @@
+[package]
+name = "codex-commit"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Commit Git changes with Codex Luna at Max reasoning, with optional push"
+license = "MIT"
+repository = "https://github.com/syz51/codex-commit"
+homepage = "https://github.com/syz51/codex-commit"
+readme = "README.md"
+authors = ["syz51"]
+keywords = ["codex", "git", "commit", "cli", "automation"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["Cargo.toml", "Cargo.lock", "src/**", "README.md", "LICENSE"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
