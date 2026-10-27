@@ -25,7 +25,7 @@ brew install syz51/tap/codex-commit
 
 Homebrew 7 requires explicit trust for third-party formulae. Omit the trust line on older versions that do not provide `brew trust`; this command trusts only `codex-commit`.
 
-The [tap](https://github.com/syz51/homebrew-tap) selects the prebuilt Apple Silicon or Intel executable for your Mac. It installs Git as a dependency; install Codex CLI separately. Upgrade with `brew upgrade syz51/tap/codex-commit`.
+The [tap](https://github.com/syz51/homebrew-tap) selects the prebuilt Apple Silicon or Intel executable for your Mac. It uses the Git already available on `PATH`, including macOS Command Line Tools Git, without requiring Homebrew's Git package. The command checks for Git when it runs and reports an error if it is missing. Install Codex CLI separately. Upgrade with `brew upgrade syz51/tap/codex-commit`.
 
 ### Cargo
 

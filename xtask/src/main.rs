@@ -335,7 +335,6 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
   homepage "https://github.com/syz51/codex-commit"
   license "MIT"
 
-  depends_on "git"
   depends_on :macos
 
   on_macos do
@@ -355,6 +354,7 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
 
   def caveats
     <<~EOS
+      Git must be available on PATH; macOS Command Line Tools Git is supported.
       Install Codex CLI separately and run `codex login` before using codex-commit.
       The default mode grants Codex full local command access. Use --push to enable pushing.
     EOS
@@ -363,11 +363,13 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
   test do
     assert_match "codex-commit {version}", shell_output("#{{bin}}/codex-commit --version")
     assert_match "Usage:", shell_output("#{{bin}}/codex-commit --help")
-    system "git", "init", "-b", "main"
-    output = shell_output("#{{bin}}/codex-commit --dry-run")
-    assert_match "Push: disabled", output
-    assert_match "Model: gpt-6-luna", output
-    assert_match "Reasoning: max", output
+    with_env(PATH: "/usr/bin:/bin") do
+      system "git", "init", "-b", "main"
+      output = shell_output("#{{bin}}/codex-commit --dry-run")
+      assert_match "Push: disabled", output
+      assert_match "Model: gpt-6-luna", output
+      assert_match "Reasoning: max", output
+    end
   end
 end
 "##
@@ -474,10 +476,9 @@ mod tests {
         for target in TARGETS {
             assert!(formula.contains(&format!("/v0.2.0/{}", asset_name("0.2.0", target))));
         }
-        assert!(
-            formula.find("depends_on \"git\"").unwrap()
-                < formula.find("depends_on :macos").unwrap()
-        );
+        assert!(!formula.contains("depends_on \"git\""));
+        assert!(formula.find("depends_on :macos").unwrap() < formula.find("on_macos do").unwrap());
+        assert!(formula.contains("with_env(PATH: \"/usr/bin:/bin\")"));
         assert!(formula.contains("assert_match \"Push: disabled\""));
     }
 
