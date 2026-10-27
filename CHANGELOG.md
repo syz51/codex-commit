@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Find unpublished GitHub releases through authenticated release listings and bind asset validation and publication to the release ID, avoiding draft-by-tag API lookup failures.
+- Preserve retry safety, immutable assets, and exact release asset checks throughout automated publication.
+
 ## 0.2.1
 
 - Publish native Mac downloads and the Cargo package automatically from a version tag.
