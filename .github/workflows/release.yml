@@ -109,6 +109,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      release_id: ${{ steps.assets.outputs.release_id }}
     permissions:
       contents: write
     steps:
@@ -133,14 +135,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          status=$(curl -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' \
-            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME")
-          case "$status" in
-            200) jq -e --arg tag "$GITHUB_REF_NAME" '.tag_name == $tag and .prerelease == false' "$RUNNER_TEMP/release.json"
-                 echo "published=$(jq -r '.draft | not' "$RUNNER_TEMP/release.json")" >> "$GITHUB_OUTPUT" ;;
-            404) echo 'published=false' >> "$GITHUB_OUTPUT" ;;
-            *) cat "$RUNNER_TEMP/release.json"; exit 1 ;;
+          gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          jq --arg tag "$GITHUB_REF_NAME" '[.[][] | select(.tag_name == $tag)]' \
+            "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/matching-releases.json"
+          case "$(jq length "$RUNNER_TEMP/matching-releases.json")" in
+            0) printf '{}\n' > "$RUNNER_TEMP/release.json"
+               echo 'published=false' >> "$GITHUB_OUTPUT" ;;
+            1) jq '.[0]' "$RUNNER_TEMP/matching-releases.json" > "$RUNNER_TEMP/release.json"
+               jq -e --arg tag "$GITHUB_REF_NAME" \
+                 '.tag_name == $tag and .prerelease == false and (.id | type == "number") and (.draft | type == "boolean")' \
+                 "$RUNNER_TEMP/release.json"
+               echo "published=$(jq -r '.draft | not' "$RUNNER_TEMP/release.json")" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Multiple releases matched $GITHUB_REF_NAME; refusing ambiguous release" >&2; exit 1 ;;
           esac
       - name: Verify and reuse an already published immutable release
         if: steps.release.outputs.published == 'true'
@@ -176,17 +182,22 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "$GITHUB_REF_NAME" --generate-notes ./*.tar.gz SHA256SUMS
           fi
       - name: Require the exact public asset set
+        id: assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME" | jq -e --arg tag "$GITHUB_REF_NAME" '
-            [.assets[].name] | sort == (["SHA256SUMS",
+          release_id="$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq .databaseId)"
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GH_REPO/releases/$release_id" | jq -e --arg tag "$GITHUB_REF_NAME" --argjson id "$release_id" '
+            .id == $id and .tag_name == $tag and .prerelease == false and
+            ([.assets[].name] | sort == (["SHA256SUMS",
               "codex-commit-\($tag)-aarch64-apple-darwin.tar.gz",
-              "codex-commit-\($tag)-x86_64-apple-darwin.tar.gz"] | sort)
+              "codex-commit-\($tag)-x86_64-apple-darwin.tar.gz"] | sort))
           '
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets
@@ -293,15 +304,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.draft.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
-          if test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true; then
-            gh api "repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME" | jq -e --arg tag "$GITHUB_REF_NAME" '
-              [.assets[].name] | sort == (["SHA256SUMS",
-                "codex-commit-\($tag)-aarch64-apple-darwin.tar.gz",
-                "codex-commit-\($tag)-x86_64-apple-darwin.tar.gz"] | sort)
-            '
+          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
+          jq -e --arg tag "$GITHUB_REF_NAME" --argjson id "$RELEASE_ID" '
+            .id == $id and .tag_name == $tag and .prerelease == false and
+            ([.assets[].name] | sort == (["SHA256SUMS",
+              "codex-commit-\($tag)-aarch64-apple-darwin.tar.gz",
+              "codex-commit-\($tag)-x86_64-apple-darwin.tar.gz"] | sort))
+          ' "$RUNNER_TEMP/release.json"
+          if test "$(jq -r .draft "$RUNNER_TEMP/release.json")" = true; then
             gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '
               .[] | select(.draft == false and .prerelease == false) | .tag_name
               | select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))
@@ -312,8 +327,8 @@ jobs:
             if test "$newest" = "$GITHUB_REF_NAME"; then latest=true; fi
             gh release edit "$GITHUB_REF_NAME" --draft=false --latest="$latest"
           fi
-          gh api "repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME" \
-            --jq '.draft == false and .prerelease == false and .immutable == true' | grep -qx true
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" | jq -e --arg tag "$GITHUB_REF_NAME" --argjson id "$RELEASE_ID" \
+            '.id == $id and .tag_name == $tag and .draft == false and .prerelease == false and .immutable == true'
           gh release verify "$GITHUB_REF_NAME"
           for asset in dist/*; do
             gh release verify-asset "$GITHUB_REF_NAME" "$asset"
