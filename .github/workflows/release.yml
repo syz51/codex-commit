@@ -308,6 +308,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          retry_verification() {
+            local attempt
+            for attempt in {1..30}; do
+              if "$@"; then return 0; fi
+              if test "$attempt" -eq 30; then return 1; fi
+              echo "Waiting for GitHub release attestation ($attempt/30)" >&2
+              sleep 5
+            done
+          }
           [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/$GH_REPO/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
           jq -e --arg tag "$GITHUB_REF_NAME" --argjson id "$RELEASE_ID" '
@@ -329,8 +338,8 @@ jobs:
           fi
           gh api "repos/$GH_REPO/releases/$RELEASE_ID" | jq -e --arg tag "$GITHUB_REF_NAME" --argjson id "$RELEASE_ID" \
             '.id == $id and .tag_name == $tag and .draft == false and .prerelease == false and .immutable == true'
-          gh release verify "$GITHUB_REF_NAME"
+          retry_verification gh release verify "$GITHUB_REF_NAME"
           for asset in dist/*; do
-            gh release verify-asset "$GITHUB_REF_NAME" "$asset"
+            retry_verification gh release verify-asset "$GITHUB_REF_NAME" "$asset"
           done
           printf 'Published %s: https://github.com/%s/releases/tag/%s\n' "$GITHUB_REF_NAME" "$GH_REPO" "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
