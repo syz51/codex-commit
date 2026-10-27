@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.2.0](https://github.com/syz51/codex-commit/releases/tag/v0.2.0):
+Download the matching archive and `SHA256SUMS` from [v0.2.1](https://github.com/syz51/codex-commit/releases/tag/v0.2.1):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.2.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.0/codex-commit-v0.2.0-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.2.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.0/codex-commit-v0.2.0-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.2.1-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.1/codex-commit-v0.2.1-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.2.1-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.1/codex-commit-v0.2.1-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.2.0
-archive=codex-commit-v0.2.0-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.2.1
+archive=codex-commit-v0.2.1-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -

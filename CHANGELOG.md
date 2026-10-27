@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- Publish native Mac downloads and the Cargo package automatically from a version tag.
+- Authenticate Cargo publishing through short-lived GitHub OIDC credentials.
+- Update Homebrew automatically through formula pull requests that merge after both Mac architecture checks pass.
+- Reuse Git already available on PATH without requiring Homebrew's Git package.
+
 ## 0.2.0
 
 - Replace the shell launcher with a dependency-free Rust executable while preserving the CLI, Luna/Max settings, streamed output, and Unix process replacement.

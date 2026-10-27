@@ -1,29 +1,32 @@
 # Releasing
 
-Release versions must match `Cargo.toml`, `Cargo.lock`, and the `vX.Y.Z` Git tag. Published crates and immutable GitHub releases cannot be overwritten; fix a bad release in a new version rather than moving its tag.
+Push a stable version tag to release the checked source to crates.io and GitHub. The Homebrew tap then updates itself without a cross-repository credential. Published crates and immutable GitHub releases cannot be overwritten; fix a bad release in a new version rather than moving its tag.
 
-## Prepare and validate
+## Prepare a version
 
-1. Update the Cargo package version and lockfile, `CHANGELOG.md`, and versioned download examples in `README.md`.
-2. Run `make check` and `make test`. Both use the pinned Rust toolchain; tests cover the full Cargo workspace, including the private release helper.
-3. Run `cargo package -p codex-commit --list` and `cargo publish -p codex-commit --dry-run --locked`; inspect the packaged file list. It must not contain credentials, test transcripts, or local configuration. The private `xtask` package is not published.
-4. Merge the pull request only after all required Linux, Apple Silicon, Intel, and lint checks pass. Check the CI run for the resulting `main` commit too.
-5. Create an annotated `vX.Y.Z` tag at that checked commit and push that exact tag. Never rewrite a published tag.
+1. Update `Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, and versioned download examples in `README.md` together.
+2. Run `make check`, `make test`, and `cargo publish -p codex-commit --dry-run --locked`. Inspect `cargo package -p codex-commit --list` for credentials, transcripts, or local configuration. The private `xtask` package is not published.
+3. Merge the version change and wait for all four CI checks on the resulting `main` commit: lint, Linux, Apple Silicon, and Intel.
+4. Create an annotated `vX.Y.Z` tag at that checked commit and push it:
 
-## Build, verify, and publish
+   ```sh
+   git tag -a vX.Y.Z -m 'vX.Y.Z'
+   git push origin vX.Y.Z
+   ```
 
-The tag-triggered `Release` workflow uses `cargo xtask verify-release-tag --tag vX.Y.Z` to check that the tag version matches Cargo metadata and that its commit is on `main`. It builds natively on Apple Silicon and Intel runners, checks each Mach-O architecture, executes help/version, packages the two archives with the Rust helper, and creates a **draft** GitHub release with `SHA256SUMS`.
+The tag must match the Cargo version and point to a commit reachable from `main`. Only stable versions with three numeric components are accepted. Never move a published tag.
 
-The same packaging steps can be run locally on each native Mac:
+## Automatic publication
 
-```sh
-cargo build -p codex-commit --release --locked --target TARGET
-cargo xtask package --target TARGET --version X.Y.Z --output <scratch>/dist
-```
+The `Release` workflow checks the exact tagged commit's latest required GitHub Actions check results before any publication. It then:
 
-After collecting both archives, run `cargo xtask checksums --version X.Y.Z --dir <scratch>/dist` to create the release's `SHA256SUMS`.
+1. Builds on native Apple Silicon and Intel runners, checks Mach-O architecture, and executes each binary's help and version commands.
+2. Uses the Rust `xtask` helper to package each executable, `LICENSE`, and `README.md`, create `SHA256SUMS`, and upload a GitHub release draft.
+3. Compiles and checks the Cargo package before requesting short-lived crates.io credentials through GitHub OIDC. It publishes the exact tagged source.
+4. Downloads the public crate, checks its registry checksum and embedded Git commit, installs it from crates.io, and runs the Rust CLI integration tests against that installed executable, including terminal cancellation.
+5. Publishes the GitHub release only after Cargo verification succeeds, then verifies release immutability and all asset attestations. Publication is serialized across versions, and an older version cannot replace a newer version as Latest.
 
-The archives contain `codex-commit`, `LICENSE`, and `README.md` at their root:
+The public archives are:
 
 ```text
 codex-commit-vX.Y.Z-aarch64-apple-darwin.tar.gz
@@ -31,23 +34,41 @@ codex-commit-vX.Y.Z-x86_64-apple-darwin.tar.gz
 SHA256SUMS
 ```
 
-1. Verify that both release jobs succeeded at the tagged commit. Download draft assets with `gh release download vX.Y.Z --repo syz51/codex-commit --dir <scratch>` and check `SHA256SUMS` and both archive contents.
-2. Publish the exact tagged source using `cargo publish -p codex-commit --locked`. Authenticate through your own crates.io credential provider or a short-lived token. Do not add a token to the repository, workflow, shell history, or release assets. This workflow does not store a Cargo publishing credential or claim that trusted publishing is configured.
-3. Check the public crates.io version and install it into an isolated root with `cargo install codex-commit --version X.Y.Z --locked --root <scratch>`. Verify help, version, dry-run, and terminal cancellation using the installed binary.
-4. Review the draft release notes, then publish with `gh release edit vX.Y.Z --repo syz51/codex-commit --draft=false --latest`. Repository release immutability locks the assets and tag when it is published.
-5. Verify the release with `gh release verify vX.Y.Z --repo syz51/codex-commit`. Verify downloaded archives with `gh release verify-asset vX.Y.Z <archive> --repo syz51/codex-commit`. Install and execute each archive on its native architecture.
+There is no manual Cargo publication, release-draft approval, or Homebrew formula edit in this flow. Release failures remain visible as failed workflow jobs.
 
-## Homebrew
+## Homebrew synchronization
 
-Generate formula metadata only from the verified release checksums:
+The [Homebrew tap](https://github.com/syz51/homebrew-tap) checks for a new published stable release every 15 minutes; GitHub may delay scheduled runs. Its synchronization workflow can also be dispatched manually to start immediately.
+
+The tap verifies the immutable upstream release and its checksums, generates the formula with the released Rust helper, and opens an update PR. It explicitly dispatches the tap's native Mac CI so updates made with `GITHUB_TOKEN` do not require a human to approve a newly created PR's CI run. Auto-merge waits for both Apple Silicon and Intel installation, system-Git, style, and audit checks. Branch protection remains enforced.
+
+After that PR merges, users receive the update through `brew update` and `brew upgrade syz51/tap/codex-commit`. A source push without a new version tag runs CI but does not publish a new package.
+
+## One-time configuration
+
+The source repository needs:
+
+- A crates.io trusted publisher for crate `codex-commit`, repository owner `syz51`, repository `codex-commit`, workflow filename `release.yml`, and GitHub environment `release`.
+- A GitHub environment named `release`, restricted to release tag deployments. It has no manual approval gate.
+- Permission to run the SHA-pinned `rust-lang/crates-io-auth-action` in the selected-actions allowlist, alongside the existing GitHub-owned actions.
+- Release immutability enabled. Only the release-draft and final-publication jobs receive repository content-write permission; only the Cargo job receives `id-token: write`.
+
+The tap needs Actions enabled, permission for `GITHUB_TOKEN` to create pull requests, auto-merge enabled, and its existing strict required Mac checks. Its synchronization workflow receives only the repository-scoped permissions needed to update its own branch, create a PR, and dispatch CI. Neither repository stores a long-lived crates.io token or a token granting access to the other repository.
+
+## Retry a failed release
+
+Rerun failed jobs in Actions, or dispatch the workflow against the same existing tag:
 
 ```sh
-cargo xtask homebrew \
-  --version X.Y.Z \
-  --checksums <scratch>/SHA256SUMS \
-  --output <homebrew-tap>/Formula/codex-commit.rb
+gh workflow run release.yml --repo syz51/codex-commit --ref vX.Y.Z
 ```
 
-The generator requires exactly the Apple Silicon and Intel archive names and validates both SHA-256 digests. Open a pull request in [syz51/homebrew-tap](https://github.com/syz51/homebrew-tap). Run the tap's native Mac CI and formula tests before merging. Then verify the public path with `brew install syz51/tap/codex-commit` and `brew test syz51/tap/codex-commit`.
+Dispatching against `main` or a branch fails validation. Retries verify an already published crate's embedded source commit rather than uploading it again. An already published immutable GitHub release is verified and reused without modifying its assets. An unpublished draft may be repaired; unexpected draft assets stop publication so they cannot become immutable accidentally. A crate/source mismatch, missing CI check, invalid checksum, or immutable-release verification failure stops the workflow.
 
-The release workflow needs only the repository's built-in GitHub token, with write permission scoped to its draft-creation job. Cargo publication and the separate Homebrew tap update remain explicit maintainer steps. Trusted publishing may replace manual Cargo authentication after it is configured and tested separately.
+For local packaging diagnostics, use the same Rust helper as CI:
+
+```sh
+cargo build -p codex-commit --release --locked --target TARGET
+cargo xtask package --target TARGET --version X.Y.Z --output <scratch>/dist
+cargo xtask checksums --version X.Y.Z --dir <scratch>/dist
+```
