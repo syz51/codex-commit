@@ -479,7 +479,10 @@ fn help_and_version_need_no_external_tools() {
         assert_code(&output, 0);
         assert!(!output.stdout.is_empty());
         if arg == "--version" {
-            assert_eq!(text(&output.stdout).trim(), "codex-commit 0.2.0");
+            assert_eq!(
+                text(&output.stdout).trim(),
+                concat!("codex-commit ", env!("CARGO_PKG_VERSION"))
+            );
         }
     }
     assert!(!fixture.log.exists());
