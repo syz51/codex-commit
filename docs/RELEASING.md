@@ -40,7 +40,7 @@ There is no manual Cargo publication, release-draft approval, or Homebrew formul
 
 The [Homebrew tap](https://github.com/syz51/homebrew-tap) checks for a new published stable release every 15 minutes; GitHub may delay scheduled runs. Its synchronization workflow can also be dispatched manually to start immediately.
 
-The tap verifies the immutable upstream release and its checksums, generates the formula with the released Rust helper, and opens an update PR. It explicitly dispatches the tap's native Mac CI so updates made with `GITHUB_TOKEN` do not require a human to approve a newly created PR's CI run. Auto-merge waits for both Apple Silicon and Intel installation, system-Git, style, and audit checks. Branch protection remains enforced.
+The tap verifies the immutable upstream release and its checksums, generates the formula with the released Rust helper, and opens an update PR using a short-lived GitHub App installation token. Normal PR events run native Mac CI. Auto-merge waits for both Apple Silicon and Intel installation, system-Git, style, and audit checks. Branch protection remains enforced; [manually dispatched checks do not qualify as required PR checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated).
 
 After that PR merges, users receive the update through `brew update` and `brew upgrade syz51/tap/codex-commit`. A source push without a new version tag runs CI but does not publish a new package.
 
@@ -53,7 +53,7 @@ The source repository needs:
 - Permission to run the SHA-pinned `rust-lang/crates-io-auth-action` in the selected-actions allowlist, alongside the existing GitHub-owned actions.
 - Release immutability enabled. Only the release-draft and final-publication jobs receive repository content-write permission; only the Cargo job receives `id-token: write`.
 
-The tap needs Actions enabled, permission for `GITHUB_TOKEN` to create pull requests, auto-merge enabled, and its existing strict required Mac checks. Its synchronization workflow receives only the repository-scoped permissions needed to update its own branch, create a PR, and dispatch CI. Neither repository stores a long-lived crates.io token or a token granting access to the other repository.
+The tap needs Actions enabled, auto-merge enabled, and its existing strict required Mac checks. Install a dedicated GitHub App only on `syz51/homebrew-tap`, granting Contents and Pull requests write permissions. In the tap's `release-updates` environment, set variable `RELEASE_APP_CLIENT_ID` and secret `RELEASE_APP_PRIVATE_KEY`, and restrict deployment to the `main` branch. Only the update job can mint a tap-scoped installation token; the read-only Rust build never receives the App key or token. The installation token is revoked after the job. Neither repository stores a long-lived crates.io token or a credential granting access to the other repository.
 
 ## Retry a failed release
 
