@@ -1,6 +1,6 @@
 [package]
 name = "codex-commit"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Commit Git changes with Codex, with optional push"
@@ -23,9 +23,12 @@ clap_complete = "4.6.11"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = { version = "0.8.23", default-features = false, features = ["parse"] }
 
+nix = { version = "0.31.3", features = ["fs", "process", "signal"] }
+serde_json = "1.0.154"
+signal-hook = "0.3.18"
+
 [dev-dependencies]
 nix = { version = "0.31.3", features = ["fs", "ioctl", "process", "signal", "term"] }
-serde_json = "1.0.154"
 tempfile = "3.27.0"
 
 [[example]]

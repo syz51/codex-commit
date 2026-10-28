@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Show compact progress and a final summary by default in unattended mode, hiding raw successful tool output, repeated hook notifications, the startup banner, and echoed prompt.
+- Preserve failed command output and tool errors; reject invalid or incomplete structured event streams.
+- Add `--verbose` for direct Codex terminal output, while retaining direct execution in interactive mode.
+- Forward cancellation signals and preserve Codex's exit code in compact mode; cover structured events and process cleanup with focused tests.
+
 ## 0.4.0
 
 - Inherit Codex sandbox settings by default instead of granting full local access; interactive mode also inherits the configured approval policy. Unattended runs cannot prompt for human approval.

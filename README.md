@@ -3,7 +3,7 @@
 [![CI](https://github.com/syz51/codex-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/syz51/codex-commit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/codex-commit.svg)](https://crates.io/crates/codex-commit)
 
-One command to inspect and commit your existing Git changes with **GPT-6 Luna at Max reasoning by default**. Add `--push` to push afterward. A small Rust executable that launches Codex CLI with direct terminal output and normal signal handling.
+One command to inspect and commit your existing Git changes with **GPT-6 Luna at Max reasoning by default**. Add `--push` to push afterward. A small Rust executable that launches Codex CLI with concise progress, a final summary, and normal signal handling.
 
 ```sh
 codex-commit
@@ -13,7 +13,7 @@ Each task run creates a saved Codex CLI session. The Rust executable supports ma
 
 ## Install
 
-All installation methods require Git and [Codex CLI](https://developers.openai.com/codex/cli/) with access to your selected model (`gpt-6-luna` by default). Authenticate with `codex login` and configure your Git identity first. A remote and push credentials are needed only with `--push`. Tested with Codex CLI 0.164.0.
+All installation methods require Git and [Codex CLI](https://developers.openai.com/codex/cli/) with access to your selected model (`gpt-6-luna` by default). Authenticate with `codex login` and configure your Git identity first. A remote and push credentials are needed only with `--push`. Tested with Codex CLI 0.165.0.
 
 ### Homebrew on macOS
 
@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.4.0](https://github.com/syz51/codex-commit/releases/tag/v0.4.0):
+Download the matching archive and `SHA256SUMS` from [v0.5.0](https://github.com/syz51/codex-commit/releases/tag/v0.5.0):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.4.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.4.0/codex-commit-v0.4.0-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.4.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.4.0/codex-commit-v0.4.0-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.5.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.5.0/codex-commit-v0.5.0-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.5.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.5.0/codex-commit-v0.5.0-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.4.0
-archive=codex-commit-v0.4.0-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.5.0
+archive=codex-commit-v0.5.0-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -100,13 +100,14 @@ codex-commit --push                       # commit, then push
 codex-commit -C ~/project                 # another repository
 codex-commit 'Commit only the README change'
 codex-commit --dry-run                    # inspect the prompt without running Codex
+codex-commit --verbose                    # stream Codex's full terminal output
 codex-commit --interactive                # interactive Codex for approvals and follow-up
 codex-commit -p personal                  # use a Codex configuration profile
 codex-commit -m gpt-6.1-sol --reasoning-effort high # override model and effort
 codex-commit --sandbox workspace-write    # override the sandbox for this run
 codex-commit --interactive -a on-request  # request human approvals interactively
 codex-commit --sandbox danger-full-access -a never # opt into full local access
-codex-commit 2>&1 | tee codex-commit.log   # capture progress and final output
+codex-commit --verbose 2>&1 | tee codex-commit.log # capture detailed terminal output
 ```
 
 Options precede optional instructions. Use `--` before instructions beginning with a dash. The command runs from the repository root, including when invoked in a subdirectory. Bare repositories and detached HEADs are rejected.
@@ -135,9 +136,11 @@ The task asks Codex to inspect staged, unstaged, and untracked changes; follow r
 
 With `--push`, Codex can push existing local commits from a clean worktree. With no upstream, it may set one only when `origin` is the sole remote. Both push modes are prompt policies, not OS-enforced network or Git restrictions; review the streamed output.
 
-Progress streams directly to stderr, and the final response goes to stdout in unattended mode. **Ctrl-C interrupts Codex**. The Rust process replaces itself with Codex on Unix, preserving terminal streams, process identity, and exit status. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
+Default unattended output shows concise progress on stderr and the final response on stdout. It renders Codex's JSON events, hiding the startup banner, echoed prompt, reasoning, routine hook notifications, and successful raw tool output. Failed command output and tool errors remain visible. The task asks for Git status and diff summaries, intended changes, checks, and the observed commit and push results without dumping full files or diffs.
 
-Use the session ID printed by Codex to continue a run interactively:
+Use `--verbose` for Codex's full terminal output. Both `--verbose` and `--interactive` replace the Rust process with Codex on Unix, preserving its terminal streams and process identity. Compact mode supervises Codex instead, forwards interrupt and termination signals, and preserves its exit code; invalid or incomplete event streams fail explicitly. Piped or file input is passed to Codex as context; compact mode does not read from an interactive terminal. **Ctrl-C interrupts Codex** in all modes. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
+
+Use the printed session ID to continue a run interactively:
 
 ```sh
 codex resume --include-non-interactive SESSION_ID

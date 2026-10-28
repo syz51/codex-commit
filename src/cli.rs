@@ -146,7 +146,7 @@ fn cli() -> clap::Command {
     clap::Command::new("codex-commit")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Inspect and commit changes with Codex (default: GPT-6 Luna, Max reasoning).")
-        .after_help("Options precede optional instructions. Use -- before instructions beginning with a dash.\nProgress and command output stream to the terminal. Press Ctrl-C to interrupt.\nDefault config: $XDG_CONFIG_HOME/codex-commit/config.toml (fallback: ~/.config/codex-commit/config.toml).\nUnset, empty, or relative XDG_CONFIG_HOME values use the fallback.\nSandbox settings follow your Codex configuration unless overridden.\nUnattended mode cannot prompt for human approval; use --interactive when needed.")
+        .after_help("Options precede optional instructions. Use -- before instructions beginning with a dash.\nCompact progress is the default; use --verbose for full command output. Press Ctrl-C to interrupt.\nDefault config: $XDG_CONFIG_HOME/codex-commit/config.toml (fallback: ~/.config/codex-commit/config.toml).\nUnset, empty, or relative XDG_CONFIG_HOME values use the fallback.\nSandbox settings follow your Codex configuration unless overridden.\nUnattended mode cannot prompt for human approval; use --interactive when needed.")
         .args_override_self(true)
         .arg(Arg::new("directory").short('C').value_name("DIR").default_value(".")
             .value_parser(value_parser!(PathBuf)).value_hint(ValueHint::DirPath)
@@ -155,6 +155,8 @@ fn cli() -> clap::Command {
             .help("Also push the current branch after committing"))
         .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue)
             .help("Print the task and settings without launching Codex"))
+        .arg(Arg::new("verbose").long("verbose").action(ArgAction::SetTrue)
+            .help("Stream the full Codex terminal transcript"))
         .arg(Arg::new("interactive").long("interactive").action(ArgAction::SetTrue)
             .help("Use Codex's interactive terminal for approvals and follow-up messages"))
         .arg(Arg::new("model").short('m').long("model").value_name("MODEL")
@@ -178,7 +180,7 @@ fn cli() -> clap::Command {
             .help("Ignore codex-commit configuration files"))
         .arg(Arg::new("completions").long("completions").value_name("SHELL")
             .value_parser(value_parser!(clap_complete::Shell))
-            .conflicts_with_all(["directory", "push", "dry-run", "interactive", "sandbox", "approval", "profile", "config", "no-config", "model", "reasoning-effort", "instructions"])
+            .conflicts_with_all(["directory", "push", "dry-run", "interactive", "verbose", "sandbox", "approval", "profile", "config", "no-config", "model", "reasoning-effort", "instructions"])
             .help("Print a shell completion script without launching Codex"))
         .arg(Arg::new("instructions").value_name("INSTRUCTIONS").num_args(0..)
             .trailing_var_arg(true).value_parser(value_parser!(OsString))
@@ -199,7 +201,7 @@ pub(crate) struct CliError {
 }
 
 impl CliError {
-    fn new(code: i32, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -221,6 +223,7 @@ struct Options {
     directory: PathBuf,
     dry_run: bool,
     interactive: bool,
+    verbose: bool,
     push: bool,
     sandbox: Option<Sandbox>,
     approval: Option<ApprovalPolicy>,
@@ -237,6 +240,7 @@ impl Default for Options {
             directory: PathBuf::from("."),
             dry_run: false,
             interactive: false,
+            verbose: false,
             push: false,
             sandbox: None,
             approval: None,
@@ -300,6 +304,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Invocation, CliErro
             .clone(),
         dry_run: matches.get_flag("dry-run"),
         interactive: matches.get_flag("interactive"),
+        verbose: matches.get_flag("verbose"),
         push: matches.get_flag("push"),
         sandbox: matches
             .get_one::<Sandbox>("sandbox")
@@ -330,7 +335,7 @@ fn join_instructions(args: impl Iterator<Item = OsString>) -> Result<String, Cli
     .map(|args| args.join(" "))
 }
 
-fn command_error(program: &str, error: io::Error) -> CliError {
+pub(crate) fn command_error(program: &str, error: io::Error) -> CliError {
     match error.kind() {
         io::ErrorKind::NotFound if program == "codex" => CliError::new(
             127,
@@ -425,8 +430,13 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliErr
 
     if options.dry_run {
         println!(
-            "Repository: {}\nBranch: {branch}\nMode: {mode}\nPush: {push_status}\nModel: {model}\nReasoning: {reasoning_effort}\nService tier: default\nConfig: {}\nProfile: {}\nSandbox override: {}\nApproval: {}\n\n{prompt}",
+            "Repository: {}\nBranch: {branch}\nMode: {mode}\nOutput: {}\nPush: {push_status}\nModel: {model}\nReasoning: {reasoning_effort}\nService tier: default\nConfig: {}\nProfile: {}\nSandbox override: {}\nApproval: {}\n\n{prompt}",
             root.display(),
+            if options.interactive || options.verbose {
+                "direct"
+            } else {
+                "compact"
+            },
             options
                 .config_path
                 .as_ref()
@@ -467,6 +477,9 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliErr
         command.arg("--no-alt-screen");
     } else {
         command.arg("exec");
+        if !options.verbose {
+            command.arg("--json");
+        }
     }
     command
         .arg("--model")
@@ -484,7 +497,11 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliErr
     io::stdout()
         .flush()
         .map_err(|error| CliError::new(1, format!("could not flush output: {error}")))?;
-    Err(command_error("codex", command.exec()))
+    if options.interactive || options.verbose {
+        Err(command_error("codex", command.exec()))
+    } else {
+        crate::process::run(command)
+    }
 }
 
 #[cfg(test)]

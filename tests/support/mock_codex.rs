@@ -5,8 +5,9 @@ use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction
 use serde_json::json;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
 use std::process::{self, Command};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
@@ -33,7 +34,36 @@ extern "C" fn cancelled(signal: i32) {
     }
 }
 
+fn json_mode() -> bool {
+    env::args_os().any(|arg| arg == "--json")
+}
+
+fn message(text: &str) {
+    if json_mode() {
+        println!(
+            "{}",
+            json!({"type":"item.completed","item":{"type":"agent_message","text":text}})
+        );
+    } else {
+        println!("{text}");
+    }
+}
+
 fn checked_git(args: &[&str]) {
+    if json_mode() {
+        let output = Command::new("git")
+            .args(args)
+            .output()
+            .expect("fixture Git");
+        println!(
+            "{}",
+            json!({"type":"item.completed","item":{"type":"command_execution","command":format!("git {}", args.join(" ")),"status":if output.status.success() {"completed"} else {"failed"},"exit_code":output.status.code(),"aggregated_output":format!("{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr))}})
+        );
+        if !output.status.success() {
+            process::exit(output.status.code().unwrap_or(1));
+        }
+        return;
+    }
     let status = Command::new("git")
         .args(args)
         .status()
@@ -66,6 +96,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))?,
     )?;
 
+    if json_mode() {
+        println!(
+            "{}",
+            json!({"type":"thread.started","thread_id":"mock-session"})
+        );
+        println!("{}", json!({"type":"turn.started"}));
+    }
     let mode = env::var("FAKE_CODEX_MODE").unwrap_or_default();
     match mode.as_str() {
         "stream" | "wait" | "wait-child" => {
@@ -81,10 +118,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     env::var_os("FAKE_CODEX_CHILD_LOG").expect("fixture child log path"),
                     serde_json::to_vec(&json!({"pid": pid, "pgid": pgid.as_raw()}))?,
                 )?;
-                println!("child ready");
+                message("child ready");
             }
             eprintln!("live progress");
-            println!("live output");
+            message("live output");
+            if env::var_os("FAKE_CODEX_LARGE_PROGRESS").is_some() {
+                message(&format!("BLOCKED_PROGRESS{}", "x".repeat(200000)));
+            }
+            if json_mode() {
+                println!(
+                    "{}",
+                    json!({"type":"item.started","item":{"type":"command_execution","command":"wait","status":"in_progress"}})
+                );
+            }
             io::stdout().flush()?;
             if mode == "stream" {
                 std::thread::sleep(Duration::from_millis(800));
@@ -116,9 +162,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => return Err("missing final push policy".into()),
             }
         }
+        "large-final" => {
+            message(&"final output".repeat(20000));
+            println!("{}", json!({"type":"turn.completed"}));
+            io::stdout().flush()?;
+            return Ok(());
+        }
+        "partial-wait" => {
+            print!("{{\"type\":\"item.completed\",\"item\":");
+            io::stdout().flush()?;
+            eprintln!("partial ready");
+            loop {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        "escaped" => {
+            let mut command = Command::new("/bin/sleep");
+            command.arg("60");
+            // Test-only owned descendant deliberately escapes the supervised group.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn()?;
+            fs::write(
+                env::var_os("FAKE_CODEX_CHILD_LOG").expect("child log"),
+                child.id().to_string(),
+            )?;
+            drop(child);
+        }
+        "stdin" => {
+            let mut text = String::new();
+            io::stdin().read_to_string(&mut text)?;
+            message(&text);
+        }
+        "large" => {
+            eprintln!("{}", "x".repeat(131072));
+            println!(
+                "{}",
+                json!({"type":"item.completed","item":{"type":"command_execution","command":"large diff","exit_code":0,"status":"completed","aggregated_output":"large successful diff".repeat(131072)}})
+            );
+        }
+        "malformed" => {
+            println!("not-json");
+            return Ok(());
+        }
+        "truncated" => {
+            return Ok(());
+        }
+        "diagnostic" => {
+            eprintln!("hook: PreToolUse");
+            eprintln!("hook: PostToolUse Completed");
+            eprintln!("warning: keep this warning");
+            println!(
+                "{}",
+                json!({"type":"item.completed","item":{"type":"command_execution","command":"git push","exit_code":128,"status":"failed","aggregated_output":"fatal: exact push error"}})
+            );
+        }
         _ => {}
     }
-    println!("finished");
+    message("finished");
+    if json_mode() {
+        println!("{}", json!({"type":"turn.completed"}));
+    }
     io::stdout().flush()?;
     process::exit(
         env::var("FAKE_CODEX_EXIT")
