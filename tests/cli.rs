@@ -465,6 +465,103 @@ fn dry_run_needs_no_codex_and_does_not_change_git() {
 }
 
 #[test]
+fn completions_need_no_git_repository_or_external_tools() {
+    let fixture = Fixture::new();
+    let empty = fixture.empty_bin("empty-completion-bin");
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let output = fixture
+            .command(cli())
+            .env("PATH", &empty)
+            .current_dir(&fixture.root)
+            .args(["--completions", shell])
+            .bounded_output()
+            .unwrap();
+        assert_code(&output, 0);
+        assert!(output.stderr.is_empty());
+        let script = text(&output.stdout);
+        assert!(script.contains("codex-commit"));
+        assert!(
+            script.contains("push"),
+            "missing push completion for {shell}"
+        );
+        if shell == "zsh" {
+            assert!(script.starts_with("#compdef codex-commit"));
+            assert!(script.contains(":DIR:_files -/"));
+        }
+    }
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn generated_zsh_script_completes_flags_and_only_directories_in_real_zle() {
+    if Command::new("zsh").arg("--version").output().is_err() {
+        eprintln!("zsh is not installed; skipping shell integration");
+        return;
+    }
+    let fixture = Fixture::new();
+    let generated = fixture
+        .command(cli())
+        .args(["--completions", "zsh"])
+        .bounded_output()
+        .unwrap();
+    assert_code(&generated, 0);
+    fs::create_dir(fixture.root.join("completion-directory")).unwrap();
+    fs::write(fixture.root.join("completion-decoy"), "file").unwrap();
+    let config = fixture.root.join("completion.zsh");
+    fs::write(
+        &config,
+        format!(
+            r#"
+        autoload -Uz compinit
+        compinit -D
+        {}
+        bindkey -e
+        PS1='READY>'
+        emit_buffer() {{ print -r -- "RESULT:$BUFFER"; }}
+        zle -N emit_buffer
+        bindkey '^X' emit_buffer
+    "#,
+            text(&generated.stdout)
+        ),
+    )
+    .unwrap();
+    let output = fixture
+        .command("zsh")
+        .current_dir(&fixture.root)
+        .args([
+            "-f",
+            "-c",
+            r#"
+        zmodload zsh/zpty
+        zmodload zsh/zselect
+        zpty -b shell zsh -f
+        trap 'zpty -d shell' EXIT
+        zpty -w shell "source ${(q)1}"
+        wait_for() {
+            local captured='' chunk
+            for attempt in {1..60}; do
+                if zpty -r shell chunk; then captured+=$chunk; fi
+                if [[ $captured == *$1* ]]; then return 0; fi
+                zselect -t 5
+            done
+            print -ru2 -- "Missing $1 in: $captured"
+            return 1
+        }
+        wait_for 'READY>' || exit 1
+        zpty -w -n shell $'codex-commit --pu\t\x18'
+        wait_for 'RESULT:codex-commit --push ' || exit 1
+        zpty -w -n shell $'\x15codex-commit -C completion-d\t\x18'
+        wait_for 'RESULT:codex-commit -C completion-directory/' || exit 1
+    "#,
+            "zsh",
+            config.to_str().unwrap(),
+        ])
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 0);
+}
+
+#[test]
 fn help_and_version_need_no_external_tools() {
     let fixture = Fixture::new();
     let empty = fixture.empty_bin("empty-bin");

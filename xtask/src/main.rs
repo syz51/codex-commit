@@ -350,6 +350,7 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
 
   def install
     bin.install "codex-commit"
+    generate_completions_from_executable(bin/"codex-commit", "--completions")
   end
 
   def caveats
@@ -363,6 +364,10 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
   test do
     assert_match "codex-commit {version}", shell_output("#{{bin}}/codex-commit --version")
     assert_match "Usage:", shell_output("#{{bin}}/codex-commit --help")
+    assert_match "#compdef codex-commit", (zsh_completion/"_codex-commit").read
+    assert_match "--push", (zsh_completion/"_codex-commit").read
+    assert_path_exists bash_completion/"codex-commit"
+    assert_path_exists fish_completion/"codex-commit.fish"
     with_env(PATH: "/usr/bin:/bin") do
       system "git", "init", "-b", "main"
       output = shell_output("#{{bin}}/codex-commit --dry-run")
@@ -480,6 +485,9 @@ mod tests {
         assert!(formula.find("depends_on :macos").unwrap() < formula.find("on_macos do").unwrap());
         assert!(formula.contains("with_env(PATH: \"/usr/bin:/bin\")"));
         assert!(formula.contains("assert_match \"Push: disabled\""));
+        assert!(formula.contains(
+            "generate_completions_from_executable(bin/\"codex-commit\", \"--completions\")"
+        ));
     }
 
     #[cfg(unix)]

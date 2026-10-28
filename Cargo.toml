@@ -1,6 +1,6 @@
 [package]
 name = "codex-commit"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Commit Git changes with Codex Luna at Max reasoning, with optional push"
@@ -16,6 +16,10 @@ include = ["Cargo.toml", "Cargo.lock", "src/**", "tests/**/*.rs", "README.md", "
 [workspace]
 members = ["xtask"]
 resolver = "3"
+
+[dependencies]
+clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context"] }
+clap_complete = "4.6.11"
 
 [dev-dependencies]
 nix = { version = "0.31.3", features = ["fs", "ioctl", "process", "signal", "term"] }
