@@ -269,6 +269,32 @@ jobs:
           printf '%s  %s\n' "$(jq -r '.version.checksum' "$RUNNER_TEMP/crate.json")" "$RUNNER_TEMP/package.crate" | sha256sum --check -
           tar -xOf "$RUNNER_TEMP/package.crate" "codex-commit-$version/.cargo_vcs_info.json" \
             | jq -e --arg sha "$RELEASE_SHA" '.git.sha1 == $sha and .git.dirty != true and .path_in_vcs == ""'
+      - name: Compile a downstream consumer of the exact public library
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/library-consumer"
+          mkdir -p "$consumer/src"
+          cat > "$consumer/Cargo.toml" <<EOF
+          [package]
+          name = "release-library-consumer"
+          version = "0.0.0"
+          edition = "2024"
+          [dependencies]
+          codex-commit = "=${GITHUB_REF_NAME#v}"
+          EOF
+          cat > "$consumer/src/main.rs" <<'EOF'
+          use codex_commit::{CommitMessage, GenerationOptions, GenerationRequest, generate_message, MAX_DIFF_BYTES};
+          fn main() {
+              let options = GenerationOptions::new("/unused/codex".into(), "/unused/auth".into(), "gpt-6.1-sol".into());
+              let request = GenerationRequest { diff: "" };
+              assert!(generate_message(request, &options).is_err());
+              let message = CommitMessage { subject: "Expose typed commit message generation".into(), body: String::new() };
+              assert!(!message.subject.is_empty());
+              assert!(MAX_DIFF_BYTES > 0);
+          }
+          EOF
+          cargo run --manifest-path "$consumer/Cargo.toml"
       - name: Install from public Cargo registry and test installed executable
         shell: bash
         run: |

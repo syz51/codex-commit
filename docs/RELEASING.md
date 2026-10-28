@@ -23,7 +23,7 @@ The `Release` workflow checks the exact tagged commit's latest required GitHub A
 1. Builds on native Apple Silicon and Intel runners, checks Mach-O architecture, and executes each binary's help and version commands.
 2. Uses the Rust `xtask` helper to package each executable, `LICENSE`, and `README.md`, create `SHA256SUMS`, and upload a GitHub release draft. Each executable generates its own completion scripts with `--completions SHELL`; no separate completion download is required.
 3. Compiles and checks the Cargo package before requesting short-lived crates.io credentials through GitHub OIDC. It publishes the exact tagged source.
-4. Downloads the public crate, checks its registry checksum and embedded Git commit, installs it from crates.io, and runs the Rust CLI integration tests against that installed executable, including terminal cancellation.
+4. Downloads the public crate, checks its registry checksum and embedded Git commit, compiles a downstream consumer of the exact public library, installs the executable from crates.io, and runs the Rust CLI integration tests against that installed executable, including terminal cancellation.
 5. Publishes the GitHub release only after Cargo verification succeeds, then verifies release immutability and all asset attestations. GitHub creates release attestations asynchronously, so verification retries for up to 30 attempts with five-second delays and fails if verification still cannot succeed. Publication is serialized across versions, and an older version cannot replace a newer version as Latest.
 
 The public archives are:
