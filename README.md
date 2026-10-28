@@ -9,7 +9,7 @@ One command to inspect and commit your existing Git changes with **GPT-6 Luna at
 codex-commit
 ```
 
-Each run creates a saved Codex CLI session. The Rust executable has no third-party Rust dependencies and supports macOS and Linux.
+Each task run creates a saved Codex CLI session. The Rust executable supports macOS and Linux and uses clap for argument parsing and shell completions.
 
 ## Install
 
@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.2.2](https://github.com/syz51/codex-commit/releases/tag/v0.2.2):
+Download the matching archive and `SHA256SUMS` from [v0.3.0](https://github.com/syz51/codex-commit/releases/tag/v0.3.0):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.2.2-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.2/codex-commit-v0.2.2-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.2.2-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.2.2/codex-commit-v0.2.2-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.3.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.3.0/codex-commit-v0.3.0-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.3.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.3.0/codex-commit-v0.3.0-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.2.2
-archive=codex-commit-v0.2.2-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.3.0
+archive=codex-commit-v0.3.0-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -69,7 +69,28 @@ cd codex-commit
 cargo install --path . --locked
 ```
 
-Alternatively, `make install` builds a release executable and installs into `~/.local/bin`. `PREFIX` and `DESTDIR` are supported for custom locations and packaging. No Codex or shell configuration is changed.
+Alternatively, `make install` builds a release executable and installs into `~/.local/bin`, with zsh, bash, and fish completions under `~/.local/share`. `PREFIX` and `DESTDIR` are supported for custom locations and packaging. Shell startup files and Codex configuration are not changed.
+
+### Shell completions
+
+Homebrew installs zsh, bash, and fish completions automatically. Zsh must have Homebrew's `share/zsh/site-functions` on its `fpath` before `compinit`; see [Homebrew's shell setup](https://docs.brew.sh/Shell-Completion#configuring-completions-in-zsh).
+
+For Cargo or prebuilt installs, generate zsh completions into a directory on your `fpath`:
+
+```sh
+mkdir -p ~/.local/share/zsh/site-functions
+codex-commit --completions zsh > ~/.local/share/zsh/site-functions/_codex-commit
+```
+
+Add the following to `~/.zshrc` before your existing `compinit` call or shell framework initialization. If neither initializes completions, also add `autoload -Uz compinit && compinit` afterward:
+
+```zsh
+fpath=(~/.local/share/zsh/site-functions $fpath)
+```
+
+Start a new shell after setup. Regenerate the file after upgrading a Cargo or prebuilt install; `make install` regenerates it automatically. Flags include descriptions, and `-C` completes directories.
+
+`codex-commit --completions SHELL` also supports `bash`, `fish`, `powershell`, and `elvish`. It prints the script to stdout without requiring Git, a repository, or Codex. Install generated files using your shell's completion setup.
 
 ## Use
 
@@ -108,7 +129,7 @@ make check  # rustfmt and Clippy
 make test   # Rust workspace unit, integration, terminal, and packaging tests
 ```
 
-Development and release tooling use the pinned Rust 1.99.1 toolchain. Runtime code has no third-party Rust dependencies; tests and the private `xtask` release helper use development dependencies recorded in `Cargo.lock`. Run `cargo test --workspace --locked` directly if you do not use Make.
+Development and release tooling use the pinned Rust 1.99.1 toolchain. Runtime code uses `clap` and `clap_complete`; all dependencies, including tests and the private `xtask` release helper, are recorded in `Cargo.lock`. Run `cargo test --workspace --locked` directly if you do not use Make.
 
 CI tests native Linux, Apple Silicon macOS, and Intel macOS, including installation. Automated Rust tests use a mock Codex executable, real disposable Git repositories, and real terminal signals; they do not call a model or require credentials. Release builds execute and check each native Mac binary before packaging with `cargo xtask`.
 

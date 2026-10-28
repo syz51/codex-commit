@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Use clap for argument parsing and generate shell completions from the same command definition.
+- Add `--completions` for zsh, bash, fish, PowerShell, and Elvish without requiring Git or Codex.
+- Install zsh, bash, and fish completions automatically through Homebrew and `make install`; document setup for Cargo and prebuilt downloads.
+
 ## 0.2.2
 
 - Find unpublished GitHub releases through authenticated release listings and bind asset validation and publication to the release ID, avoiding draft-by-tag API lookup failures.

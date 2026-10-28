@@ -14,6 +14,10 @@ release:
 install: release
 	install -d "$(DESTDIR)$(PREFIX)/bin"
 	install -m 755 "$(CARGO_TARGET_DIR)/release/codex-commit" "$(DESTDIR)$(PREFIX)/bin/codex-commit"
+	install -d "$(DESTDIR)$(PREFIX)/share/zsh/site-functions" "$(DESTDIR)$(PREFIX)/share/bash-completion/completions" "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d"
+	"$(CARGO_TARGET_DIR)/release/codex-commit" --completions zsh > "$(DESTDIR)$(PREFIX)/share/zsh/site-functions/_codex-commit"
+	"$(CARGO_TARGET_DIR)/release/codex-commit" --completions bash > "$(DESTDIR)$(PREFIX)/share/bash-completion/completions/codex-commit"
+	"$(CARGO_TARGET_DIR)/release/codex-commit" --completions fish > "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/codex-commit.fish"
 
 check:
 	cargo fmt --all -- --check

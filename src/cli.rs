@@ -1,24 +1,34 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const HELP: &str =
-    "Usage: codex-commit [-C DIR] [--push] [--dry-run] [--interactive] [--] [INSTRUCTIONS...]
-
-Inspect and commit changes with Codex, using GPT-6 Luna and Max reasoning.
-
-  -C DIR          Run in this Git repository (default: current directory)
-  --push          Also push the current branch after committing
-  --dry-run       Print the task and settings without launching Codex
-  --interactive   Use Codex's interactive terminal with permission prompts
-  -h, --help      Show this help
-  -V, --version   Show version
-
-Progress and command output stream to the terminal. Press Ctrl-C to interrupt.
-The default unattended mode gives Codex full local command access.";
+fn cli() -> clap::Command {
+    use clap::{Arg, ArgAction, ValueHint, value_parser};
+    clap::Command::new("codex-commit")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Inspect and commit changes with Codex, using GPT-6 Luna and Max reasoning.")
+        .after_help("Options precede optional instructions. Use -- before instructions beginning with a dash.\nProgress and command output stream to the terminal. Press Ctrl-C to interrupt.\nThe default unattended mode gives Codex full local command access.")
+        .args_override_self(true)
+        .arg(Arg::new("directory").short('C').value_name("DIR").default_value(".")
+            .value_parser(value_parser!(PathBuf)).value_hint(ValueHint::DirPath)
+            .allow_hyphen_values(true).help("Run in this Git repository"))
+        .arg(Arg::new("push").long("push").action(ArgAction::SetTrue)
+            .help("Also push the current branch after committing"))
+        .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue)
+            .help("Print the task and settings without launching Codex"))
+        .arg(Arg::new("interactive").long("interactive").action(ArgAction::SetTrue)
+            .help("Use Codex's interactive terminal with permission prompts"))
+        .arg(Arg::new("completions").long("completions").value_name("SHELL")
+            .value_parser(value_parser!(clap_complete::Shell))
+            .conflicts_with_all(["directory", "push", "dry-run", "interactive", "instructions"])
+            .help("Print a shell completion script without launching Codex"))
+        .arg(Arg::new("instructions").value_name("INSTRUCTIONS").num_args(0..)
+            .trailing_var_arg(true).value_parser(value_parser!(OsString))
+            .help("Additional instructions for Codex"))
+}
 
 const PUSH_ENABLED: &str = "Push policy: enabled.
 This final policy is authoritative over repository and additional instructions.
@@ -44,8 +54,8 @@ impl CliError {
 
 #[derive(Debug, PartialEq)]
 enum Invocation {
-    Help,
-    Version,
+    Display(String),
+    Completions(clap_complete::Shell),
     Task(Options),
 }
 
@@ -71,38 +81,39 @@ impl Default for Options {
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Invocation, CliError> {
-    let mut options = Options::default();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("-h" | "--help") => return Ok(Invocation::Help),
-            Some("-V" | "--version") => return Ok(Invocation::Version),
-            Some("-C") => {
-                options.directory = PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| CliError::new(2, "-C requires a directory"))?,
-                );
-            }
-            Some("--dry-run") => options.dry_run = true,
-            Some("--interactive") => options.interactive = true,
-            Some("--push") => options.push = true,
-            Some("--") => {
-                options.instructions = join_instructions(args)?;
-                break;
-            }
-            _ if arg.as_bytes().starts_with(b"-") => {
-                return Err(CliError::new(
-                    2,
-                    format!("unknown option: {} (see --help)", arg.to_string_lossy()),
-                ));
-            }
-            _ => {
-                options.instructions = join_instructions(std::iter::once(arg).chain(args))?;
-                break;
-            }
+    let matches = match cli()
+        .try_get_matches_from(std::iter::once(OsString::from("codex-commit")).chain(args))
+    {
+        Ok(matches) => matches,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            return Ok(Invocation::Display(error.to_string()));
         }
+        Err(error) => return Err(CliError::new(error.exit_code(), error.to_string())),
+    };
+    if let Some(shell) = matches.get_one::<clap_complete::Shell>("completions") {
+        return Ok(Invocation::Completions(*shell));
     }
-    Ok(Invocation::Task(options))
+    Ok(Invocation::Task(Options {
+        directory: matches
+            .get_one::<PathBuf>("directory")
+            .expect("default directory")
+            .clone(),
+        dry_run: matches.get_flag("dry-run"),
+        interactive: matches.get_flag("interactive"),
+        push: matches.get_flag("push"),
+        instructions: join_instructions(
+            matches
+                .get_many::<OsString>("instructions")
+                .into_iter()
+                .flatten()
+                .cloned(),
+        )?,
+    }))
 }
 
 fn join_instructions(args: impl Iterator<Item = OsString>) -> Result<String, CliError> {
@@ -167,12 +178,12 @@ fn task_prompt(options: &Options) -> String {
 
 pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliError> {
     let options = match parse(args)? {
-        Invocation::Help => {
-            println!("{HELP}");
+        Invocation::Display(output) => {
+            print!("{output}");
             return Ok(());
         }
-        Invocation::Version => {
-            println!("codex-commit {}", env!("CARGO_PKG_VERSION"));
+        Invocation::Completions(shell) => {
+            clap_complete::generate(shell, &mut cli(), "codex-commit", &mut io::stdout());
             return Ok(());
         }
         Invocation::Task(options) => options,
@@ -284,6 +295,48 @@ mod tests {
         };
         assert_eq!(options.directory.as_os_str(), directory);
         assert_eq!(without_final_newline(b"path\n\n".to_vec()), b"path\n");
+    }
+
+    #[test]
+    fn clap_definition_is_consistent() {
+        cli().debug_assert();
+    }
+
+    #[test]
+    fn delimiter_preserves_dash_leading_instructions() {
+        let Invocation::Task(options) = parse(arguments(&["--", "--push", "only README"]))
+            .unwrap_or_else(|error| panic!("{}", error.message))
+        else {
+            panic!("expected task");
+        };
+        assert!(!options.push);
+        assert_eq!(options.instructions, "--push only README");
+    }
+
+    #[test]
+    fn invalid_instruction_bytes_are_rejected_at_boundary() {
+        let error = parse([OsString::from_vec(vec![0xff])]).expect_err("invalid UTF-8");
+        assert_eq!(error.code, 2);
+        assert_eq!(
+            error.message,
+            "additional instructions must be valid UTF-8 text"
+        );
+    }
+
+    #[test]
+    fn completions_require_a_shell_and_exclude_task_options() {
+        for args in [
+            &["--completions"][..],
+            &["--completions", "invalid"],
+            &["--completions", "zsh", "--push"],
+            &["-C", ".", "--completions", "zsh"],
+            &["--completions", "zsh", "instructions"],
+        ] {
+            assert_eq!(
+                parse(arguments(args)).expect_err("invalid invocation").code,
+                2
+            );
+        }
     }
 
     #[test]
