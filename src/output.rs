@@ -50,7 +50,10 @@ impl<W: Write, E: Write> Renderer<W, E> {
             "thread.started" => {
                 writeln!(self.stderr, "Session: {}", string(&event, "thread_id")?)?;
             }
-            "turn.started" => self.completed = false,
+            "turn.started" => {
+                self.completed = false;
+                writeln!(self.stderr, "Codex is working (Ctrl-C to interrupt).")?;
+            }
             "turn.completed" => self.completed = true,
             "turn.failed" => {
                 self.progress()?;
@@ -65,7 +68,11 @@ impl<W: Write, E: Write> Renderer<W, E> {
                 self.progress()?;
                 // Diagnostics can precede a recovered turn. Completion and the
                 // process status determine success; turn.failed remains decisive.
-                writeln!(self.stderr, "Codex error: {}", string(&event, "message")?)?;
+                writeln!(
+                    self.stderr,
+                    "Codex diagnostic: {}",
+                    string(&event, "message")?
+                )?;
             }
             "item.started" | "item.updated" | "item.completed" => {
                 let item = &event["item"];
@@ -82,7 +89,11 @@ impl<W: Write, E: Write> Renderer<W, E> {
                     }
                     "error" if completed => {
                         self.progress()?;
-                        writeln!(self.stderr, "Codex error: {}", string(item, "message")?)?;
+                        writeln!(
+                            self.stderr,
+                            "Codex diagnostic: {}",
+                            string(item, "message")?
+                        )?;
                     }
                     "command_execution" => {
                         let command = string(item, "command")?;
@@ -198,6 +209,17 @@ mod tests {
     }
 
     #[test]
+    fn turn_start_shows_activity_before_any_message_or_tool() {
+        let mut renderer = Renderer::new(Vec::new(), Vec::new());
+        renderer.event(r#"{"type":"turn.started"}"#).unwrap();
+        assert_eq!(
+            renderer.stderr,
+            b"Codex is working (Ctrl-C to interrupt).\n"
+        );
+        assert!(renderer.stdout.is_empty());
+    }
+
+    #[test]
     fn successful_tool_output_and_reasoning_are_hidden() {
         let (success, out, err) = render(&[
             json!({"type":"thread.started","thread_id":"session-1"}),
@@ -276,8 +298,39 @@ mod tests {
         ]);
         assert!(success);
         assert_eq!(out, "Done\n");
-        assert!(err.contains("retrying transport"));
-        assert!(err.contains("experimental feature warning"));
+        assert_eq!(
+            err,
+            "Codex diagnostic: retrying transport\nCodex diagnostic: experimental feature warning\n"
+        );
+    }
+
+    #[test]
+    fn chronicle_warning_remains_diagnostic_when_turn_succeeds_or_fails() {
+        let warning = "Under-development features enabled: chronicle. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /home/user/.codex/config.toml.";
+        for diagnostic in [
+            json!({"type":"error","message":warning}),
+            json!({"type":"item.completed","item":{"type":"error","message":warning}}),
+        ] {
+            let (success, out, err) = render(&[
+                diagnostic.clone(),
+                message("Done"),
+                json!({"type":"turn.completed"}),
+            ]);
+            assert!(success);
+            assert_eq!(out, "Done\n");
+            assert_eq!(err, format!("Codex diagnostic: {warning}\n"));
+
+            let (success, out, err) = render(&[
+                diagnostic,
+                json!({"type":"turn.failed","error":{"message":"model unavailable"}}),
+            ]);
+            assert!(!success);
+            assert!(out.is_empty());
+            assert_eq!(
+                err,
+                format!("Codex diagnostic: {warning}\nCodex failed: model unavailable\n")
+            );
+        }
     }
 
     #[test]

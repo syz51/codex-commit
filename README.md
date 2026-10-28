@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.6.0](https://github.com/syz51/codex-commit/releases/tag/v0.6.0):
+Download the matching archive and `SHA256SUMS` from [v0.6.1](https://github.com/syz51/codex-commit/releases/tag/v0.6.1):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.6.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.0/codex-commit-v0.6.0-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.6.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.0/codex-commit-v0.6.0-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.6.1-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.1/codex-commit-v0.6.1-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.6.1-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.1/codex-commit-v0.6.1-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.6.0
-archive=codex-commit-v0.6.0-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.6.1
+archive=codex-commit-v0.6.1-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -136,7 +136,9 @@ The task asks Codex to inspect staged, unstaged, and untracked changes; follow r
 
 With `--push`, Codex can push existing local commits from a clean worktree. With no upstream, it may set one only when `origin` is the sole remote. Both push modes are prompt policies, not OS-enforced network or Git restrictions; review the streamed output.
 
-Default unattended output shows concise progress on stderr and the final response on stdout. It renders Codex's JSON events, hiding the startup banner, echoed prompt, reasoning, routine hook notifications, and successful raw tool output. Failed command output and tool errors remain visible. The task asks for Git status and diff summaries, intended changes, checks, and the observed commit and push results without dumping full files or diffs.
+Default unattended output immediately reports when a turn starts, shows concise progress on stderr, and keeps the final response on stdout. Codex JSON messages do not identify commentary separately, so the latest message is held until another message or tool activity establishes it as progress, or turn completion establishes it as the final response. Ctrl-C and other cancellation signals are forwarded immediately. If Codex has not exited after a 250 ms grace period, the supervisor force-stops its process group; a second cancellation forces shutdown immediately. Cancellation preserves the original signal exit status even when output is blocked.
+
+It renders Codex's JSON events, hiding the startup banner, echoed prompt, reasoning, routine hook notifications, and successful raw tool output. Failed command output and tool errors remain visible. The task asks for Git status and diff summaries, intended changes, checks, and the observed commit and push results without dumping full files or diffs.
 
 Use `--verbose` for Codex's full terminal output. Both `--verbose` and `--interactive` replace the Rust process with Codex on Unix, preserving its terminal streams and process identity. Compact mode supervises Codex instead, forwards interrupt and termination signals, and preserves its exit code; invalid or incomplete event streams fail explicitly. Piped or file input is passed to Codex as context; compact mode does not read from an interactive terminal. **Ctrl-C interrupts Codex** in all modes. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
 
@@ -195,7 +197,7 @@ responsible for reviewing message accuracy and their public-data boundary.
 
 ```toml
 [dependencies]
-codex-commit = "=0.6.0"
+codex-commit = "=0.6.1"
 ```
 
 ```rust,no_run
