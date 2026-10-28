@@ -90,6 +90,13 @@ impl BoundedOutput for Command {
     }
 }
 
+fn shell_status(status: ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap())
+}
+
 fn cli() -> PathBuf {
     env::var_os("CODEX_COMMIT_BIN")
         .map(PathBuf::from)
@@ -365,7 +372,7 @@ fn default_launch_from_nested_directory_uses_luna_max_and_saved_thread() {
             .any(|arg| arg.to_string_lossy().starts_with("approval_policy="))
     );
     assert!(!call.has("--ephemeral"));
-    assert!(!call.has("--json"));
+    assert!(call.has("--json"));
     assert!(call.prompt().contains("Push policy: disabled."));
     assert!(text(&output.stdout).contains("finished"));
 }
@@ -1103,6 +1110,10 @@ struct Terminal {
 
 impl Terminal {
     fn launch(fixture: &Fixture, with_child: bool) -> Self {
+        Self::launch_mode(fixture, with_child, false)
+    }
+
+    fn launch_mode(fixture: &Fixture, with_child: bool, compact: bool) -> Self {
         let terminal = openpty(None, None).expect("open real PTY");
         let slave = File::from(terminal.slave);
         let master = File::from(terminal.master);
@@ -1111,10 +1122,14 @@ impl Terminal {
             .local_flags
             .insert(LocalFlags::ISIG | LocalFlags::ICANON);
         termios.control_chars[SpecialCharacterIndices::VINTR as usize] = 3;
+        termios.control_chars[SpecialCharacterIndices::VSUSP as usize] = 26;
         tcsetattr(&slave, SetArg::TCSANOW, &termios).expect("enable terminal Ctrl-C");
         let flags = OFlag::from_bits_truncate(fcntl(&master, FcntlArg::F_GETFL).unwrap());
         fcntl(&master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
         let mut command = fixture.command(cli());
+        if !compact {
+            command.arg("--verbose");
+        }
         command
             .env(
                 "FAKE_CODEX_MODE",
@@ -1353,4 +1368,344 @@ fn mock_model_default_commits_without_any_remote() {
     assert_ne!(fixture.git(&["rev-parse", "HEAD"]), old_head);
     assert_eq!(fixture.git(&["show", "HEAD:tracked.txt"]), "local work");
     assert_eq!(fixture.git(&["remote"]), "");
+}
+
+#[test]
+fn compact_filters_noise_and_keeps_diagnostics() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .command(cli())
+        .env("FAKE_CODEX_MODE", "diagnostic")
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 0);
+    assert_eq!(text(&output.stdout).trim(), "finished");
+    let stderr = text(&output.stderr);
+    assert!(!stderr.contains("hook:"));
+    assert!(stderr.contains("warning: keep this warning"));
+    assert!(stderr.contains("fatal: exact push error"));
+    assert!(stderr.contains("git push"));
+}
+
+#[test]
+fn compact_rejects_invalid_and_incomplete_events() {
+    for mode in ["malformed", "truncated"] {
+        let fixture = Fixture::new();
+        let output = fixture
+            .command(cli())
+            .env("FAKE_CODEX_MODE", mode)
+            .bounded_output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn verbose_keeps_direct_output() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .command(cli())
+        .arg("--verbose")
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 0);
+    assert!(!fixture.invocation().has("--json"));
+    assert_eq!(text(&output.stdout).trim(), "finished");
+}
+
+#[test]
+fn compact_terminal_cancellation_reaps_codex_and_descendant() {
+    for signal in [Signal::SIGINT, Signal::SIGTERM] {
+        let fixture = Fixture::new();
+        let mut terminal = Terminal::launch_mode(&fixture, true, true);
+        terminal.wait_for_output(true);
+        let codex = fixture.invocation().pid;
+        assert_ne!(codex, terminal.child.id());
+        let child: Value = serde_json::from_slice(&fs::read(&fixture.child_log).unwrap()).unwrap();
+        let descendant = Pid::from_raw(child["pid"].as_i64().unwrap() as i32);
+        assert_eq!(shell_status(terminal.cancel(signal)), 128 + signal as i32);
+        assert_eq!(kill(Pid::from_raw(codex as i32), None), Err(Errno::ESRCH));
+        assert_eq!(kill(descendant, None), Err(Errno::ESRCH));
+    }
+}
+
+#[test]
+fn compact_drains_large_streams_without_showing_successful_tool_output() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .command(cli())
+        .env("FAKE_CODEX_MODE", "large")
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 0);
+    assert_eq!(text(&output.stdout).trim(), "finished");
+    assert!(!text(&output.stderr).contains("large successful diff"));
+    assert!(output.stderr.len() > 131072);
+}
+
+#[test]
+fn compact_preserves_file_stdin_as_codex_context() {
+    let fixture = Fixture::new();
+    let input = fixture.root.join("stdin.txt");
+    fs::write(&input, "context from stdin").unwrap();
+    let output = fixture
+        .command(cli())
+        .env("FAKE_CODEX_MODE", "stdin")
+        .stdin(Stdio::from(File::open(input).unwrap()))
+        .output()
+        .unwrap();
+    assert_code(&output, 0);
+    assert!(text(&output.stderr).contains("context from stdin"));
+    assert_eq!(text(&output.stdout).trim(), "finished");
+}
+
+#[test]
+fn compact_terminal_suspend_and_resume_preserve_job_control() {
+    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+    let fixture = Fixture::new();
+    let mut terminal = Terminal::launch_mode(&fixture, true, true);
+    terminal.wait_for_output(true);
+    let wrapper = Pid::from_raw(terminal.child.id() as i32);
+    let codex = fixture.invocation().pid;
+    let child: Value = serde_json::from_slice(&fs::read(&fixture.child_log).unwrap()).unwrap();
+    let descendant = child["pid"].as_u64().unwrap();
+    terminal.master.write_all(&[26]).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match waitpid(wrapper, Some(WaitPidFlag::WUNTRACED | WaitPidFlag::WNOHANG)).unwrap() {
+            WaitStatus::Stopped(_, Signal::SIGSTOP) => break,
+            WaitStatus::StillAlive => assert!(Instant::now() < deadline, "wrapper must suspend"),
+            state => panic!("unexpected wrapper status: {state:?}"),
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for pid in [u64::from(codex), descendant] {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            if text(&output.stdout).trim_start().starts_with('T') {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "owned process must suspend: {pid}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    kill(wrapper, Signal::SIGCONT).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", &codex.to_string()])
+            .output()
+            .unwrap();
+        if !text(&output.stdout).trim_start().starts_with('T') {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Codex must resume");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(terminal.child.try_wait().unwrap().is_none());
+    assert_eq!(shell_status(terminal.cancel(Signal::SIGTERM)), 143);
+    assert_eq!(kill(Pid::from_raw(codex as i32), None), Err(Errno::ESRCH));
+    assert_eq!(
+        kill(Pid::from_raw(descendant as i32), None),
+        Err(Errno::ESRCH)
+    );
+}
+
+#[test]
+fn compact_exits_when_detached_descendant_retains_pipes() {
+    struct Escaped(PathBuf);
+    impl Drop for Escaped {
+        fn drop(&mut self) {
+            if let Ok(text) = fs::read_to_string(&self.0) {
+                if let Ok(pid) = text.parse() {
+                    let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+                }
+            }
+        }
+    }
+    let fixture = Fixture::new();
+    let escaped = Escaped(fixture.child_log.clone());
+    let start = Instant::now();
+    let output = fixture
+        .command(cli())
+        .env("FAKE_CODEX_MODE", "escaped")
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 0);
+    assert_eq!(text(&output.stdout).trim(), "finished");
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "must not wait for detached descendants"
+    );
+    assert!(
+        kill(
+            Pid::from_raw(fs::read_to_string(&escaped.0).unwrap().parse().unwrap()),
+            None
+        )
+        .is_ok(),
+        "wrapper must not signal escaped processes"
+    );
+}
+
+#[test]
+fn compact_cancellation_preserves_signal_status_with_partial_json() {
+    for signal in [Signal::SIGTERM, Signal::SIGINT] {
+        let fixture = Fixture::new();
+        let stdout = tempfile::tempfile_in(&fixture.root).unwrap();
+        let mut stderr = tempfile::tempfile_in(&fixture.root).unwrap();
+        let mut child = fixture
+            .command(cli())
+            .env("FAKE_CODEX_MODE", "partial-wait")
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr.try_clone().unwrap()))
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            stderr.seek(SeekFrom::Start(0)).unwrap();
+            let mut text = String::new();
+            stderr.read_to_string(&mut text).unwrap();
+            if text.contains("partial ready") {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        kill(Pid::from_raw(child.id() as i32), signal).unwrap();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(shell_status(status), 128 + signal as i32);
+        stderr.seek(SeekFrom::Start(0)).unwrap();
+        let mut output = String::new();
+        stderr.read_to_string(&mut output).unwrap();
+        assert!(!output.contains("invalid Codex JSON"));
+    }
+}
+
+#[test]
+fn compact_blocked_final_output_remains_interruptible_after_codex_exits() {
+    let fixture = Fixture::new();
+    let (read, write) = nix::unistd::pipe().unwrap();
+    let mut reader = File::from(read);
+    let flags = OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL).unwrap());
+    fcntl(&reader, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+    let stderr = tempfile::tempfile_in(&fixture.root).unwrap();
+    let child = fixture
+        .command(cli())
+        .env("FAKE_CODEX_MODE", "large-final")
+        .stdout(Stdio::from(write))
+        .stderr(Stdio::from(stderr))
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut guard = CapturedChild {
+        child,
+        reaped: false,
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match reader.read(&mut [0; 1]) {
+            Ok(1) => break,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            result => panic!("final output expected: {result:?}"),
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        kill(Pid::from_raw(fixture.invocation().pid as i32), None),
+        Err(Errno::ESRCH)
+    );
+    assert!(
+        guard.child.try_wait().unwrap().is_none(),
+        "final output must be blocked"
+    );
+    kill(Pid::from_raw(guard.child.id() as i32), Signal::SIGTERM).unwrap();
+    let status = loop {
+        if let Some(status) = guard.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "blocked output must remain cancellable"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    guard.reaped = true;
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(status.signal(), Some(Signal::SIGTERM as i32));
+}
+
+#[test]
+fn compact_blocked_progress_cancellation_reaps_owned_processes() {
+    let fixture = Fixture::new();
+    let (read, write) = nix::unistd::pipe().unwrap();
+    let mut reader = File::from(read);
+    let flags = OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL).unwrap());
+    fcntl(&reader, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+    let child = fixture
+        .command(cli())
+        .env("FAKE_CODEX_MODE", "wait-child")
+        .env("FAKE_CODEX_LARGE_PROGRESS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(write))
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut guard = CapturedChild {
+        child,
+        reaped: false,
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    loop {
+        let mut buffer = [0; 8192];
+        match reader.read(&mut buffer) {
+            Ok(length) => output.extend_from_slice(&buffer[..length]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("read stderr: {error}"),
+        }
+        if text(&output).contains("BLOCKED_PROGRESS") {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let codex = fixture.invocation().pid;
+    let descendant: Value = serde_json::from_slice(&fs::read(&fixture.child_log).unwrap()).unwrap();
+    assert!(guard.child.try_wait().unwrap().is_none());
+    kill(Pid::from_raw(guard.child.id() as i32), Signal::SIGTERM).unwrap();
+    let status = loop {
+        if let Some(status) = guard.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "first TERM must interrupt blocked progress"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    guard.reaped = true;
+    assert_eq!(shell_status(status), 143);
+    assert_eq!(kill(Pid::from_raw(codex as i32), None), Err(Errno::ESRCH));
+    assert_eq!(
+        kill(
+            Pid::from_raw(descendant["pid"].as_i64().unwrap() as i32),
+            None
+        ),
+        Err(Errno::ESRCH)
+    );
 }

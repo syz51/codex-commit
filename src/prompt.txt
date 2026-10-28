@@ -1,6 +1,6 @@
 Inspect the existing changes in this Git repository and commit them sensibly.
 
-Read and follow the applicable AGENTS.md instructions first. Show git status and a summary of both staged and unstaged diffs in the terminal before committing. Inspect relevant untracked files as well. Explain what you intend to commit and stream progress, commands, and their results as you work.
+Read and follow the applicable AGENTS.md instructions first. Inspect git status, staged and unstaged diffs, and relevant untracked files before committing. Briefly summarize the status, selected changes, and checks in progress messages. Keep progress concise: do not dump full files, diffs, routine commands, or successful command output. Report failures with useful diagnostics and explain what you intend to commit.
 
 Honor the scope in any additional instructions below. Otherwise include the existing intended changes, including relevant untracked files; do not include secrets, credentials, generated junk, or unrelated files. Do not edit source files unless the additional instructions explicitly ask for edits. Do not discard existing work. Run the smallest meaningful checks required by the repository and stop if they fail.
 
