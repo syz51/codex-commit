@@ -13,7 +13,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const CANCELLATION_GRACE: Duration = Duration::from_millis(250);
 
 const MAX_EVENT: u64 = 16 * 1024 * 1024;
 
@@ -35,6 +37,8 @@ pub(crate) fn run(mut command: Command) -> Result<(), CliError> {
     let forwarding = Arc::clone(&target);
     let cancellation = Arc::new(AtomicI32::new(0));
     let forwarded_cancellation = Arc::clone(&cancellation);
+    let cancellation_deadline = Arc::new(Mutex::new(None));
+    let forwarded_deadline = Arc::clone(&cancellation_deadline);
     let signal_thread = thread::spawn(move || {
         for signal in signals.forever() {
             let target = forwarding.lock().expect("signal target lock");
@@ -44,10 +48,28 @@ pub(crate) fn run(mut command: Command) -> Result<(), CliError> {
                         signal,
                         Signal::SIGINT | Signal::SIGTERM | Signal::SIGHUP | Signal::SIGQUIT
                     ) {
-                        forwarded_cancellation.store(signal as i32, Ordering::Release);
+                        if forwarded_cancellation
+                            .compare_exchange(0, signal as i32, Ordering::AcqRel, Ordering::Acquire)
+                            .is_err()
+                        {
+                            // A second cancellation means stop now, preserving
+                            // the first signal as the wrapper's exit status.
+                            let _ = killpg(group, Signal::SIGKILL);
+                            continue;
+                        }
+                        *forwarded_deadline
+                            .lock()
+                            .expect("cancellation deadline lock") =
+                            Some(Instant::now() + CANCELLATION_GRACE);
+                        let _ = killpg(group, signal);
+                        // Pending cancellation must reach a stopped agent too.
+                        let _ = killpg(group, Signal::SIGCONT);
+                        continue;
                     }
                     let _ = killpg(group, signal);
-                    if signal == Signal::SIGTSTP {
+                    if signal == Signal::SIGTSTP
+                        && forwarded_cancellation.load(Ordering::Acquire) == 0
+                    {
                         // Stop the supervisor only after its owned group has
                         // received suspension. SIGCONT will resume both.
                         let _ = kill(getpid(), Signal::SIGSTOP);
@@ -102,6 +124,13 @@ pub(crate) fn run(mut command: Command) -> Result<(), CliError> {
         loop {
             {
                 let mut target = reaper_target.lock().expect("signal target lock");
+                if cancellation_deadline
+                    .lock()
+                    .expect("cancellation deadline lock")
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    let _ = killpg(group, Signal::SIGKILL);
+                }
                 if let Some(status) = child.try_wait()? {
                     let _ = killpg(group, Signal::SIGKILL);
                     *target = None;

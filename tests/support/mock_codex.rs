@@ -85,6 +85,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sigaction(Signal::SIGTERM, &action)?;
     }
 
+    if env::var_os("FAKE_CODEX_IGNORE_CANCELLATION").is_some() {
+        let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+        // Deliberately model an agent that cannot gracefully shut down.
+        for signal in [
+            Signal::SIGINT,
+            Signal::SIGTERM,
+            Signal::SIGHUP,
+            Signal::SIGQUIT,
+        ] {
+            unsafe {
+                sigaction(signal, &ignore)?;
+            }
+        }
+    }
+
     let args: Vec<_> = env::args_os().skip(1).collect();
     let argument_bytes: Vec<_> = args.iter().map(|arg| arg.as_bytes()).collect();
     fs::write(
@@ -102,6 +117,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             json!({"type":"thread.started","thread_id":"mock-session"})
         );
         println!("{}", json!({"type":"turn.started"}));
+    }
+    if env::var_os("FAKE_CODEX_IDLE_WITHOUT_MESSAGE").is_some() {
+        io::stdout().flush()?;
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     let mode = env::var("FAKE_CODEX_MODE").unwrap_or_default();
     match mode.as_str() {

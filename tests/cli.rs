@@ -1651,61 +1651,165 @@ fn compact_blocked_final_output_remains_interruptible_after_codex_exits() {
 
 #[test]
 fn compact_blocked_progress_cancellation_reaps_owned_processes() {
-    let fixture = Fixture::new();
-    let (read, write) = nix::unistd::pipe().unwrap();
-    let mut reader = File::from(read);
-    let flags = OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL).unwrap());
-    fcntl(&reader, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
-    let child = fixture
-        .command(cli())
-        .env("FAKE_CODEX_MODE", "wait-child")
-        .env("FAKE_CODEX_LARGE_PROGRESS", "1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(write))
-        .process_group(0)
-        .spawn()
-        .unwrap();
-    let mut guard = CapturedChild {
-        child,
-        reaped: false,
-    };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut output = Vec::new();
-    loop {
-        let mut buffer = [0; 8192];
-        match reader.read(&mut buffer) {
-            Ok(length) => output.extend_from_slice(&buffer[..length]),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => panic!("read stderr: {error}"),
+    for ignore_cancellation in [false, true] {
+        let mut fixture = Fixture::new();
+        if ignore_cancellation {
+            fixture
+                .environment
+                .insert("FAKE_CODEX_IGNORE_CANCELLATION".into(), "1".into());
         }
-        if text(&output).contains("BLOCKED_PROGRESS") {
-            break;
+        let (read, write) = nix::unistd::pipe().unwrap();
+        let mut reader = File::from(read);
+        let flags = OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL).unwrap());
+        fcntl(&reader, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+        let child = fixture
+            .command(cli())
+            .env("FAKE_CODEX_MODE", "wait-child")
+            .env("FAKE_CODEX_LARGE_PROGRESS", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(write))
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut guard = CapturedChild {
+            child,
+            reaped: false,
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        loop {
+            let mut buffer = [0; 8192];
+            match reader.read(&mut buffer) {
+                Ok(length) => output.extend_from_slice(&buffer[..length]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("read stderr: {error}"),
+            }
+            if text(&output).contains("BLOCKED_PROGRESS") {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
+        let codex = fixture.invocation().pid;
+        struct AgentCleanup(Pid);
+        impl Drop for AgentCleanup {
+            fn drop(&mut self) {
+                let _ = killpg(self.0, Signal::SIGKILL);
+            }
+        }
+        let _agent_cleanup = AgentCleanup(Pid::from_raw(codex as i32));
+        let descendant: Value =
+            serde_json::from_slice(&fs::read(&fixture.child_log).unwrap()).unwrap();
+        assert!(guard.child.try_wait().unwrap().is_none());
+        kill(Pid::from_raw(guard.child.id() as i32), Signal::SIGTERM).unwrap();
+        let status = loop {
+            if let Some(status) = guard.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "first TERM must interrupt blocked progress"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        guard.reaped = true;
+        assert_eq!(shell_status(status), 143);
+        assert_eq!(kill(Pid::from_raw(codex as i32), None), Err(Errno::ESRCH));
+        assert_eq!(
+            kill(
+                Pid::from_raw(descendant["pid"].as_i64().unwrap() as i32),
+                None
+            ),
+            Err(Errno::ESRCH)
+        );
     }
-    let codex = fixture.invocation().pid;
-    let descendant: Value = serde_json::from_slice(&fs::read(&fixture.child_log).unwrap()).unwrap();
-    assert!(guard.child.try_wait().unwrap().is_none());
-    kill(Pid::from_raw(guard.child.id() as i32), Signal::SIGTERM).unwrap();
-    let status = loop {
-        if let Some(status) = guard.child.try_wait().unwrap() {
-            break status;
+}
+
+#[test]
+fn compact_cancellation_bounds_unresponsive_codex_shutdown() {
+    for signal in [
+        Signal::SIGINT,
+        Signal::SIGTERM,
+        Signal::SIGHUP,
+        Signal::SIGQUIT,
+    ] {
+        let mut fixture = Fixture::new();
+        fixture
+            .environment
+            .insert("FAKE_CODEX_IGNORE_CANCELLATION".into(), "1".into());
+        let mut terminal = Terminal::launch_mode(&fixture, false, true);
+        terminal.wait_for_output(false);
+        let codex = Pid::from_raw(fixture.invocation().pid as i32);
+        let start = Instant::now();
+        // Always clean the separate agent group, even when testing old code.
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| terminal.cancel(signal)));
+        let _ = killpg(codex, Signal::SIGKILL);
+        let status = result.expect("unresponsive Codex must be forcibly cancelled");
+        assert_eq!(shell_status(status), 128 + signal as i32);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(kill(codex, None), Err(Errno::ESRCH));
+    }
+}
+
+#[test]
+fn compact_reports_activity_without_waiting_for_a_message() {
+    let mut fixture = Fixture::new();
+    fixture
+        .environment
+        .insert("FAKE_CODEX_IDLE_WITHOUT_MESSAGE".into(), "1".into());
+    let mut terminal = Terminal::launch_mode(&fixture, false, true);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        terminal.drain();
+        if text(&terminal.output).contains("Codex is working (Ctrl-C to interrupt).") {
+            break;
         }
         assert!(
             Instant::now() < deadline,
-            "first TERM must interrupt blocked progress"
+            "turn start must be visible before any message"
         );
         std::thread::sleep(Duration::from_millis(10));
-    };
-    guard.reaped = true;
-    assert_eq!(shell_status(status), 143);
-    assert_eq!(kill(Pid::from_raw(codex as i32), None), Err(Errno::ESRCH));
-    assert_eq!(
-        kill(
-            Pid::from_raw(descendant["pid"].as_i64().unwrap() as i32),
-            None
-        ),
-        Err(Errno::ESRCH)
-    );
+    }
+    assert!(terminal.child.try_wait().unwrap().is_none());
+    assert!(!text(&terminal.output).contains("live output"));
+    assert_eq!(shell_status(terminal.cancel(Signal::SIGINT)), 130);
+}
+
+#[test]
+fn compact_cancels_stopped_agent_and_preserves_first_signal_on_repeat() {
+    for stopped in [true, false] {
+        let mut fixture = Fixture::new();
+        fixture
+            .environment
+            .insert("FAKE_CODEX_IGNORE_CANCELLATION".into(), "1".into());
+        let mut terminal = Terminal::launch_mode(&fixture, false, true);
+        terminal.wait_for_output(false);
+        let codex = Pid::from_raw(fixture.invocation().pid as i32);
+        if stopped {
+            killpg(codex, Signal::SIGSTOP).unwrap();
+        }
+        terminal.master.write_all(&[3]).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if stopped {
+                // The pending INT reaches the resumed agent; its ignored
+                // disposition must still lead to deadline escalation.
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    if let Some(status) = terminal.child.try_wait().unwrap() {
+                        terminal.finished = true;
+                        break status;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            } else {
+                std::thread::sleep(Duration::from_millis(30));
+                terminal.cancel(Signal::SIGTERM)
+            }
+        }));
+        let _ = killpg(codex, Signal::SIGKILL);
+        assert_eq!(shell_status(result.unwrap()), 130);
+        assert_eq!(kill(codex, None), Err(Errno::ESRCH));
+    }
 }

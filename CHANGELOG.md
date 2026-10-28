@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+
+- Bound compact-mode cancellation to a 250 ms graceful shutdown window, then force-stop the owned process group; a second cancellation forces immediate shutdown while preserving the original signal exit status.
+- Report turn-start activity immediately while preserving the final response on stdout.
+- Label recoverable Codex diagnostics neutrally instead of presenting experimental-feature warnings as errors.
+
 ## 0.6.0
 
 - Add a public Rust library returning typed commit subjects and bodies from supplied public diffs.
