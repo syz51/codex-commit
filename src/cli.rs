@@ -146,7 +146,7 @@ fn cli() -> clap::Command {
     clap::Command::new("codex-commit")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Inspect and commit changes with Codex (default: GPT-6 Luna, Max reasoning).")
-        .after_help("Options precede optional instructions. Use -- before instructions beginning with a dash.\nCompact progress is the default; use --verbose for full command output. Press Ctrl-C to interrupt.\nDefault config: $XDG_CONFIG_HOME/codex-commit/config.toml (fallback: ~/.config/codex-commit/config.toml).\nUnset, empty, or relative XDG_CONFIG_HOME values use the fallback.\nSandbox settings follow your Codex configuration unless overridden.\nUnattended mode cannot prompt for human approval; use --interactive when needed.")
+        .after_help("Use `codex-commit generate --help` for generation-only JSON output from a supplied public diff.\nOptions precede optional instructions. Use -- before instructions beginning with a dash.\nCompact progress is the default; use --verbose for full command output. Press Ctrl-C to interrupt.\nDefault config: $XDG_CONFIG_HOME/codex-commit/config.toml (fallback: ~/.config/codex-commit/config.toml).\nUnset, empty, or relative XDG_CONFIG_HOME values use the fallback.\nSandbox settings follow your Codex configuration unless overridden.\nUnattended mode cannot prompt for human approval; use --interactive when needed.")
         .args_override_self(true)
         .arg(Arg::new("directory").short('C').value_name("DIR").default_value(".")
             .value_parser(value_parser!(PathBuf)).value_hint(ValueHint::DirPath)

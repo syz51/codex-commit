@@ -1,6 +1,6 @@
 [package]
 name = "codex-commit"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Commit Git changes with Codex, with optional push"
@@ -18,6 +18,7 @@ members = ["xtask"]
 resolver = "3"
 
 [dependencies]
+tempfile = "3.27.0"
 clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 clap_complete = "4.6.11"
 serde = { version = "1.0.228", features = ["derive"] }

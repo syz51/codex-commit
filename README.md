@@ -9,7 +9,7 @@ One command to inspect and commit your existing Git changes with **GPT-6 Luna at
 codex-commit
 ```
 
-Each task run creates a saved Codex CLI session. The Rust executable supports macOS and Linux and uses clap for argument parsing and shell completions.
+Each commit task creates a saved Codex CLI session. Generation-only calls use isolated ephemeral sessions. The Rust executable supports macOS and Linux and uses clap for argument parsing and shell completions.
 
 ## Install
 
@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.5.0](https://github.com/syz51/codex-commit/releases/tag/v0.5.0):
+Download the matching archive and `SHA256SUMS` from [v0.6.0](https://github.com/syz51/codex-commit/releases/tag/v0.6.0):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.5.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.5.0/codex-commit-v0.5.0-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.5.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.5.0/codex-commit-v0.5.0-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.6.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.0/codex-commit-v0.6.0-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.6.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.0/codex-commit-v0.6.0-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.5.0
-archive=codex-commit-v0.5.0-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.6.0
+archive=codex-commit-v0.6.0-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -162,3 +162,56 @@ CI tests native Linux, Apple Silicon macOS, and Intel macOS, including installat
 See [CONTRIBUTING.md](CONTRIBUTING.md), [release procedures](docs/RELEASING.md), [CHANGELOG.md](CHANGELOG.md), and [SECURITY.md](SECURITY.md).
 
 [MIT licensed](LICENSE). Not affiliated with OpenAI.
+
+## Generate a message from a supplied public diff
+
+Generation does not inspect a repository or commit or push anything. Supply only
+public diff text on stdin, with explicit Codex executable, authentication home,
+and model:
+
+```sh
+codex-commit generate --codex-path /absolute/path/to/codex \
+  --codex-home /absolute/path/to/auth-home --model gpt-6.1-sol < public.diff
+```
+
+Success writes one JSON object with `subject` and `body` strings. Errors return a
+nonzero status without a fallback message. Input is limited to 1 MiB and results
+to 16 KiB. The default reasoning level is high and the timeout is 120 seconds;
+`--reasoning-effort` and `--timeout-secs` override them. Service tier is ordinary.
+
+The authentication home supplies credentials only. Generation copies the current
+access token into an isolated home and removes OAuth refresh credentials; it
+never writes back to the source authentication home. An expired token fails with
+an authentication error: refresh the source credentials with Codex CLI and retry.
+Generation ignores user
+configuration and rules and runs in an empty, ephemeral context. Before inference,
+a loopback compatibility check verifies that the exact CLI configuration exposes
+no tools. Unsupported CLI controls, tool exposure, incomplete responses, generic
+messages, and unsupported validation claims fail closed. Diff text is untrusted
+data; changes inside it are never instructions to execute. Callers remain
+responsible for reviewing message accuracy and their public-data boundary.
+
+### Rust library
+
+```toml
+[dependencies]
+codex-commit = "=0.6.0"
+```
+
+```rust,no_run
+use codex_commit::{generate_message, GenerationOptions, GenerationRequest};
+
+let options = GenerationOptions::new(
+    "/absolute/path/to/codex".into(),
+    "/absolute/path/to/auth-home".into(),
+    "gpt-6.1-sol".into(),
+);
+let message = generate_message(GenerationRequest { diff: "public diff text" }, &options)?;
+println!("{}", message.subject);
+# Ok::<(), codex_commit::Error>(())
+```
+
+The library exposes typed messages and errors, explicit timeout and cancellation,
+and bounded input/output. CLI parsing, terminal rendering, and the Codex event
+protocol are private implementation details. The existing commit CLI retains its
+configuration, repository inspection, and optional push behavior.

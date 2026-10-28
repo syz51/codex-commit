@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0
+
+- Add a public Rust library returning typed commit subjects and bodies from supplied public diffs.
+- Add generation-only JSON CLI output with explicit backend settings, bounded input/output, timeout and cancellation.
+- Isolate authenticated Codex generation from ambient instructions, configuration, tools and repository state; verify tool isolation before inference and fail closed on invalid or uninformative output.
+- Preserve existing commit and optional push behavior.
+
 ## 0.5.0
 
 - Show compact progress and a final summary by default in unattended mode, hiding raw successful tool output, repeated hook notifications, the startup banner, and echoed prompt.
