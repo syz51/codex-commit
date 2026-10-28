@@ -331,7 +331,7 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
     let base = format!("https://github.com/syz51/codex-commit/releases/download/v{version}");
     Ok(format!(
         r##"class CodexCommit < Formula
-  desc "Commit Git changes with Codex Luna at Max reasoning, with optional push"
+  desc "Commit Git changes with Codex, with optional push"
   homepage "https://github.com/syz51/codex-commit"
   license "MIT"
 
@@ -357,7 +357,7 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
     <<~EOS
       Git must be available on PATH; macOS Command Line Tools Git is supported.
       Install Codex CLI separately and run `codex login` before using codex-commit.
-      The default mode grants Codex full local command access. Use --push to enable pushing.
+      Sandbox settings follow your Codex configuration unless overridden. Use --push to enable pushing.
     EOS
   end
 
@@ -370,7 +370,7 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
     assert_path_exists fish_completion/"codex-commit.fish"
     with_env(PATH: "/usr/bin:/bin") do
       system "git", "init", "-b", "main"
-      output = shell_output("#{{bin}}/codex-commit --dry-run")
+      output = shell_output("#{{bin}}/codex-commit --no-config --dry-run")
       assert_match "Push: disabled", output
       assert_match "Model: gpt-6-luna", output
       assert_match "Reasoning: max", output

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Inherit Codex sandbox settings by default instead of granting full local access; interactive mode also inherits the configured approval policy. Unattended runs cannot prompt for human approval.
+- Add explicit sandbox, approval-policy, and Codex profile overrides.
+- Read optional global XDG TOML configuration, with `--config` and `--no-config` controls and CLI precedence.
+- Support model and reasoning selection through configuration and `--model` / `--reasoning-effort`, retaining GPT-6 Luna and Max reasoning as defaults.
+- Show configuration paths in help and selected settings in dry-run output; include the new options in generated shell completions.
+
 ## 0.3.0
 
 - Use clap for argument parsing and generate shell completions from the same command definition.

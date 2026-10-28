@@ -3,7 +3,7 @@
 [![CI](https://github.com/syz51/codex-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/syz51/codex-commit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/codex-commit.svg)](https://crates.io/crates/codex-commit)
 
-One command to inspect and commit your existing Git changes with **GPT-6 Luna at Max reasoning**. Add `--push` to push afterward. A small Rust executable that launches Codex CLI with direct terminal output and normal signal handling.
+One command to inspect and commit your existing Git changes with **GPT-6 Luna at Max reasoning by default**. Add `--push` to push afterward. A small Rust executable that launches Codex CLI with direct terminal output and normal signal handling.
 
 ```sh
 codex-commit
@@ -13,7 +13,7 @@ Each task run creates a saved Codex CLI session. The Rust executable supports ma
 
 ## Install
 
-All installation methods require Git and [Codex CLI](https://developers.openai.com/codex/cli/) with access to `gpt-6-luna`. Authenticate with `codex login` and configure your Git identity first. A remote and push credentials are needed only with `--push`. Tested with Codex CLI 0.164.0.
+All installation methods require Git and [Codex CLI](https://developers.openai.com/codex/cli/) with access to your selected model (`gpt-6-luna` by default). Authenticate with `codex login` and configure your Git identity first. A remote and push credentials are needed only with `--push`. Tested with Codex CLI 0.164.0.
 
 ### Homebrew on macOS
 
@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.3.0](https://github.com/syz51/codex-commit/releases/tag/v0.3.0):
+Download the matching archive and `SHA256SUMS` from [v0.4.0](https://github.com/syz51/codex-commit/releases/tag/v0.4.0):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.3.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.3.0/codex-commit-v0.3.0-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.3.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.3.0/codex-commit-v0.3.0-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.4.0-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.4.0/codex-commit-v0.4.0-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.4.0-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.4.0/codex-commit-v0.4.0-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.3.0
-archive=codex-commit-v0.3.0-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.4.0
+archive=codex-commit-v0.4.0-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -100,13 +100,36 @@ codex-commit --push                       # commit, then push
 codex-commit -C ~/project                 # another repository
 codex-commit 'Commit only the README change'
 codex-commit --dry-run                    # inspect the prompt without running Codex
-codex-commit --interactive                # interactive Codex with approval prompts
+codex-commit --interactive                # interactive Codex for approvals and follow-up
+codex-commit -p personal                  # use a Codex configuration profile
+codex-commit -m gpt-6.1-sol --reasoning-effort high # override model and effort
+codex-commit --sandbox workspace-write    # override the sandbox for this run
+codex-commit --interactive -a on-request  # request human approvals interactively
+codex-commit --sandbox danger-full-access -a never # opt into full local access
 codex-commit 2>&1 | tee codex-commit.log   # capture progress and final output
 ```
 
 Options precede optional instructions. Use `--` before instructions beginning with a dash. The command runs from the repository root, including when invoked in a subdirectory. Bare repositories and detached HEADs are rejected.
 
-The default mode runs unattended and exits when Codex finishes. It grants Codex full local command access so it can update Git metadata. Run it only in repositories you trust. `--interactive` instead uses the workspace-write sandbox and Codex permission prompts; its terminal stays open for follow-up messages. Both modes explicitly select the normal service tier, without enabling Fast mode.
+The default mode runs unattended and exits when Codex finishes. Both modes leave sandbox settings to your Codex configuration, including trusted project settings. `-p` / `--profile` selects a Codex profile, and `--sandbox` overrides the sandbox for this run. The wrapper does not read or change your Codex configuration or automatically widen access when a commit is blocked. Configured sandbox or network restrictions may block staging, committing protected Git metadata, or pushing. Codex reports the failure; use `--interactive` for required human approval or explicitly override permissions.
+
+Unattended `codex exec` cannot prompt for human approval; configured automatic review may handle eligible approval requests. Use `--interactive` when human approval is needed; its terminal stays open for follow-up messages and its approval policy follows Codex configuration unless overridden. `-a` / `--ask-for-approval` accepts `on-request` (requires `--interactive`) or `never`. To explicitly restore the former unattended full-access behavior, use `--sandbox danger-full-access -a never`; run it only in repositories you trust. Both modes default to GPT-6 Luna and Max reasoning. `-m` / `--model` and `--reasoning-effort` override these selections. Reasoning levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; actual model availability and supported effort levels are checked by Codex. The normal service tier is always selected, without enabling Fast mode.
+
+### Global configuration
+
+On macOS and Linux, `codex-commit` optionally reads `$XDG_CONFIG_HOME/codex-commit/config.toml`. When `XDG_CONFIG_HOME` is unset, empty, or relative, it falls back to `$HOME/.config/codex-commit/config.toml`. Only absolute environment paths are used; without a valid base, no default file is loaded. This follows the [XDG Base Directory specification](https://specifications.freedesktop.org/basedir/0.8/). No project configuration is loaded by the wrapper.
+
+Create the file yourself if you want wrapper defaults; all fields are optional:
+
+```toml
+model = "gpt-6-luna"
+model_reasoning_effort = "max"
+profile = "personal"
+sandbox = "workspace-write"
+# approval_policy = "on-request" # requires --interactive when set
+```
+
+Explicit CLI options override this file, which overrides the wrapper defaults independently for each field. Model and reasoning default to `gpt-6-luna` and `max`; unset profile, sandbox, and approval settings are left to Codex. `--config PATH` selects another file (relative to the invoking directory), and `--no-config` bypasses wrapper configuration. `--dry-run` shows the loaded path and merged overrides without resolving Codex's effective settings. Missing default files are ignored; missing explicit files, unreadable files, invalid TOML, unknown fields, and unsupported values fail before Git or Codex runs. Help, version, and shell completion generation do not read configuration. The wrapper never creates or edits configuration files.
 
 The task asks Codex to inspect staged, unstaged, and untracked changes; follow repository instructions; run relevant checks; and commit existing intended changes without rewriting history. By default its final policy forbids pushing, publishing, fetching, or pulling, even when repository or additional instructions mention pushing. Rerun with `--push` to enable pushing.
 

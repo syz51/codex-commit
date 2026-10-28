@@ -356,8 +356,14 @@ fn default_launch_from_nested_directory_uses_luna_max_and_saved_thread() {
     assert!(call.has("model_reasoning_effort=\"max\""));
     assert!(call.has("service_tier=\"default\""));
     assert_eq!(call.option("-C"), fixture.repo);
-    assert_eq!(call.option("--sandbox"), "danger-full-access");
-    assert_eq!(call.option("-a"), "never");
+    assert!(!call.has("--sandbox"));
+    assert!(!call.has("-a"));
+    assert!(
+        !call
+            .args
+            .iter()
+            .any(|arg| arg.to_string_lossy().starts_with("approval_policy="))
+    );
     assert!(!call.has("--ephemeral"));
     assert!(!call.has("--json"));
     assert!(call.prompt().contains("Push policy: disabled."));
@@ -379,11 +385,375 @@ fn directory_option_and_interactive_permissions() {
     let call = fixture.invocation();
     assert!(!call.has("exec"));
     assert!(call.has("--no-alt-screen"));
-    assert_eq!(call.option("-a"), "on-request");
-    assert_eq!(call.option("--sandbox"), "workspace-write");
+    assert!(!call.has("-a"));
+    assert!(!call.has("--sandbox"));
+    assert!(
+        !call
+            .args
+            .iter()
+            .any(|arg| arg.to_string_lossy().starts_with("approval_policy="))
+    );
     assert_eq!(call.option("--model"), "gpt-6-luna");
     assert!(call.has("model_reasoning_effort=\"max\""));
     assert!(call.prompt().contains("Push policy: enabled."));
+}
+
+fn write_config(path: &Path, source: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, source).unwrap();
+}
+
+#[test]
+fn global_config_uses_absolute_xdg_or_home_fallback() {
+    let fixture = Fixture::new();
+    let home_config = fixture.root.join(".config/codex-commit/config.toml");
+    write_config(&home_config, "sandbox = 'read-only'\nprofile = 'home'\n");
+    for xdg in [None, Some(""), Some("relative-config")] {
+        let mut command = fixture.command(cli());
+        if let Some(value) = xdg {
+            command.env("XDG_CONFIG_HOME", value);
+        }
+        let output = command.arg("--dry-run").bounded_output().unwrap();
+        assert_code(&output, 0);
+        let stdout = text(&output.stdout);
+        assert!(stdout.contains(&format!("Config: {}", home_config.display())));
+        assert!(stdout.contains("Sandbox override: read-only"));
+        assert!(stdout.contains("Profile: home"));
+    }
+    let xdg = fixture.root.join("xdg");
+    let xdg_config = xdg.join("codex-commit/config.toml");
+    write_config(&xdg_config, "profile = 'xdg'");
+    let output = fixture
+        .command(cli())
+        .env("XDG_CONFIG_HOME", xdg)
+        .arg("--dry-run")
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("Profile: xdg"));
+    assert!(text(&output.stdout).contains(&format!("Config: {}", xdg_config.display())));
+    assert!(text(&output.stdout).contains("Sandbox override: none"));
+    for home in [None, Some("relative-home")] {
+        let mut command = fixture.command(cli());
+        command
+            .env_remove("HOME")
+            .env("XDG_CONFIG_HOME", "relative-config");
+        if let Some(value) = home {
+            command.env("HOME", value);
+        }
+        let output = command.arg("--dry-run").bounded_output().unwrap();
+        assert_code(&output, 0);
+        assert!(text(&output.stdout).contains("Config: none"));
+    }
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn config_precedence_and_explicit_relative_path_are_forwarded() {
+    let fixture = Fixture::new();
+    let default = fixture.root.join(".config/codex-commit/config.toml");
+    write_config(
+        &default,
+        "sandbox = 'read-only'\nprofile = 'global'\napproval_policy = 'on-request'",
+    );
+    // Configured human approvals must be validated after merging CLI overrides.
+    let output = fixture.invoke(&["-a", "never"]);
+    assert_code(&output, 0);
+    let call = fixture.invocation();
+    assert_eq!(call.option("--profile"), "global");
+    assert_eq!(call.option("--sandbox"), "read-only");
+    assert!(call.has("approval_policy=\"never\""));
+    let output = fixture.invoke(&["--interactive", "--sandbox", "workspace-write", "-p", "cli"]);
+    assert_code(&output, 0);
+    let call = fixture.invocation();
+    assert_eq!(call.option("--sandbox"), "workspace-write");
+    assert_eq!(call.option("--profile"), "cli");
+    assert!(call.has("approval_policy=\"on-request\""));
+    write_config(&fixture.repo.join("custom.toml"), "profile = 'explicit'");
+    assert_code(&fixture.invoke(&["--config", "custom.toml"]), 0);
+    let call = fixture.invocation();
+    assert_eq!(call.option("--profile"), "explicit");
+    assert!(!call.has("--sandbox"));
+    assert!(!call.has("approval_policy=\"on-request\""));
+    assert_code(&fixture.invoke(&["--no-config"]), 0);
+    assert!(!fixture.invocation().has("--profile"));
+}
+
+#[test]
+fn config_failures_are_reported_before_git_or_codex() {
+    let fixture = Fixture::new();
+    let config = fixture.root.join(".config/codex-commit/config.toml");
+    let empty = fixture.empty_bin("empty-config-bin");
+    for source in [
+        "[broken",
+        "unknown = true",
+        "sandbox = 'invalid'",
+        "approval_policy = 'untrusted'",
+        "profile = 42",
+        "sandbox = 1",
+        "approval_policy = 'on-request'",
+    ] {
+        write_config(&config, source);
+        let output = fixture
+            .command(cli())
+            .env("PATH", &empty)
+            .bounded_output()
+            .unwrap();
+        assert_code(&output, 2);
+        let stderr = text(&output.stderr);
+        if source.contains("on-request") {
+            assert!(stderr.contains("requires --interactive"));
+        } else {
+            assert!(stderr.contains(&config.display().to_string()), "{stderr}");
+        }
+        assert!(!fixture.log.exists());
+    }
+    fs::remove_file(&config).unwrap();
+    fs::create_dir(&config).unwrap();
+    let output = fixture
+        .command(cli())
+        .env("PATH", &empty)
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 2);
+    assert!(text(&output.stderr).contains("could not read config"));
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn config_missing_explicit_and_opt_out_behavior() {
+    let fixture = Fixture::new();
+    let output = fixture.invoke(&["--dry-run"]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("Config: none"));
+    let missing = fixture.root.join("missing.toml");
+    let output = fixture
+        .command(cli())
+        .arg("--config")
+        .arg(&missing)
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 2);
+    assert!(text(&output.stderr).contains(&missing.display().to_string()));
+    write_config(
+        &fixture.root.join(".config/codex-commit/config.toml"),
+        "invalid ???",
+    );
+    assert_code(&fixture.invoke(&["--no-config", "--dry-run"]), 0);
+    for args in [&["--help"][..], &["--version"], &["--completions", "zsh"]] {
+        assert_code(&fixture.invoke(args), 0);
+    }
+    for args in [
+        &["--config"][..],
+        &["--config", "missing.toml", "--no-config"],
+        &["--completions", "zsh", "--no-config"],
+        &["--completions", "zsh", "--config", "missing.toml"],
+    ] {
+        assert_code(&fixture.invoke(args), 2);
+    }
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn model_and_reasoning_config_merge_independently_with_cli() {
+    let fixture = Fixture::new();
+    let config = fixture.root.join(".config/codex-commit/config.toml");
+    write_config(
+        &config,
+        "model = 'custom-model'\nmodel_reasoning_effort = 'medium'",
+    );
+    for (flags, model, effort) in [
+        (vec![], "custom-model", "medium"),
+        (
+            vec!["--interactive", "-m", "cli-model"],
+            "cli-model",
+            "medium",
+        ),
+        (vec!["--reasoning-effort", "low"], "custom-model", "low"),
+        (
+            vec![
+                "--interactive",
+                "--model",
+                "both",
+                "--reasoning-effort",
+                "high",
+            ],
+            "both",
+            "high",
+        ),
+    ] {
+        let output = fixture.invoke(&flags);
+        assert_code(&output, 0);
+        let call = fixture.invocation();
+        assert_eq!(call.option("--model"), model);
+        assert!(call.has(&format!("model_reasoning_effort=\"{effort}\"")));
+        assert!(call.has("service_tier=\"default\""));
+        assert_eq!(call.has("exec"), !flags.contains(&"--interactive"));
+        assert!(text(&output.stderr).contains(&format!("({model}, {effort} reasoning;")));
+    }
+    write_config(&config, "model = 'model-only'");
+    assert_code(&fixture.invoke(&[]), 0);
+    assert!(fixture.invocation().has("model_reasoning_effort=\"max\""));
+    write_config(&config, "model_reasoning_effort = 'none'");
+    assert_code(&fixture.invoke(&[]), 0);
+    assert_eq!(fixture.invocation().option("--model"), "gpt-6-luna");
+    assert!(fixture.invocation().has("model_reasoning_effort=\"none\""));
+}
+
+#[test]
+fn selected_model_and_reasoning_are_shown_in_dry_run() {
+    let fixture = Fixture::new();
+    write_config(
+        &fixture.root.join(".config/codex-commit/config.toml"),
+        "model = 'configured-model'\nmodel_reasoning_effort = 'minimal'",
+    );
+    for (flags, model, effort) in [
+        (vec!["--dry-run"], "configured-model", "minimal"),
+        (
+            vec![
+                "--dry-run",
+                "-m",
+                "selected-model",
+                "--reasoning-effort",
+                "xhigh",
+            ],
+            "selected-model",
+            "xhigh",
+        ),
+    ] {
+        let output = fixture.invoke(&flags);
+        assert_code(&output, 0);
+        let stdout = text(&output.stdout);
+        assert!(stdout.contains(&format!("Model: {model}")));
+        assert!(stdout.contains(&format!("Reasoning: {effort}")));
+    }
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn model_and_reasoning_are_validated_before_git() {
+    let fixture = Fixture::new();
+    let empty = fixture.empty_bin("empty-model-bin");
+    for flags in [
+        &["-m"][..],
+        &["--model", ""],
+        &["-m", " \t"],
+        &["--reasoning-effort"],
+        &["--reasoning-effort", "ultra"],
+        &["--reasoning-effort", "invalid"],
+        &["--completions", "zsh", "--model", "test"],
+        &["--completions", "zsh", "--reasoning-effort", "max"],
+    ] {
+        let output = fixture
+            .command(cli())
+            .env("PATH", &empty)
+            .args(flags)
+            .bounded_output()
+            .unwrap();
+        assert_code(&output, 2);
+    }
+    let config = fixture.root.join(".config/codex-commit/config.toml");
+    for source in [
+        "model = ''",
+        "model = '   '",
+        "model = 42",
+        "model_reasoning_effort = 'ultra'",
+        "model_reasoning_effort = 42",
+    ] {
+        write_config(&config, source);
+        let output = fixture
+            .command(cli())
+            .env("PATH", &empty)
+            .bounded_output()
+            .unwrap();
+        assert_code(&output, 2);
+        assert!(text(&output.stderr).contains(&config.display().to_string()));
+    }
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn permission_overrides_and_profiles_are_explicit_in_both_modes() {
+    let fixture = Fixture::new();
+    for (interactive, sandbox, approval) in [
+        (false, Some("read-only"), None),
+        (false, Some("danger-full-access"), Some("never")),
+        (false, None, Some("never")),
+        (true, None, None),
+        (true, Some("workspace-write"), None),
+        (true, None, Some("on-request")),
+        (true, Some("read-only"), Some("never")),
+    ] {
+        let mut args = vec!["--profile", "personal"];
+        if interactive {
+            args.push("--interactive");
+        }
+        if let Some(value) = sandbox {
+            args.extend(["--sandbox", value]);
+        }
+        if let Some(value) = approval {
+            args.extend(["-a", value]);
+        }
+        assert_code(&fixture.invoke(&args), 0);
+        let call = fixture.invocation();
+        assert_eq!(call.has("exec"), !interactive);
+        assert_eq!(call.option("--profile"), "personal");
+        assert_eq!(call.has("--sandbox"), sandbox.is_some());
+        if let Some(value) = sandbox {
+            assert_eq!(call.option("--sandbox"), value);
+        }
+        let policies: Vec<_> = call
+            .args
+            .iter()
+            .filter(|arg| arg.to_string_lossy().starts_with("approval_policy="))
+            .collect();
+        assert_eq!(policies.len(), usize::from(approval.is_some()));
+        if let Some(value) = approval {
+            assert!(call.has(&format!("approval_policy=\"{value}\"")));
+        }
+    }
+}
+
+#[test]
+fn human_approval_requires_interactive_before_running_git() {
+    let fixture = Fixture::new();
+    let empty = fixture.empty_bin("empty-approval-bin");
+    let output = fixture
+        .command(cli())
+        .env("PATH", empty)
+        .args(["-a", "on-request"])
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 2);
+    assert!(text(&output.stderr).contains("requires --interactive"));
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn dry_run_reports_only_requested_permission_overrides() {
+    let fixture = Fixture::new();
+    let output = fixture.invoke(&[
+        "--dry-run",
+        "--sandbox",
+        "danger-full-access",
+        "-a",
+        "never",
+        "-p",
+        "personal",
+    ]);
+    assert_code(&output, 0);
+    let stdout = text(&output.stdout);
+    for expected in [
+        "Profile: personal",
+        "Sandbox override: danger-full-access",
+        "Approval: never",
+    ] {
+        assert!(stdout.contains(expected));
+    }
+    let output = fixture.invoke(&["--dry-run", "--interactive"]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("Approval: inherited from Codex configuration"));
+    assert!(!fixture.log.exists());
 }
 
 #[test]
@@ -453,6 +823,8 @@ fn dry_run_needs_no_codex_and_does_not_change_git() {
             "gpt-6-luna",
             "max",
             "only tracked.txt",
+            "Sandbox override: none (inherited from Codex configuration)",
+            "Approval: Codex exec (no human approval prompts)",
             &format!("Push: {policy}"),
         ] {
             assert!(stdout.contains(expected), "missing {expected}");
@@ -484,6 +856,20 @@ fn completions_need_no_git_repository_or_external_tools() {
             script.contains("push"),
             "missing push completion for {shell}"
         );
+        for flag in [
+            "sandbox",
+            "ask-for-approval",
+            "profile",
+            "config",
+            "no-config",
+            "model",
+            "reasoning-effort",
+        ] {
+            assert!(
+                script.contains(flag),
+                "missing {flag} completion for {shell}"
+            );
+        }
         if shell == "zsh" {
             assert!(script.starts_with("#compdef codex-commit"));
             assert!(script.contains(":DIR:_files -/"));
@@ -659,7 +1045,19 @@ fn non_utf8_repository_path_is_preserved() {
 #[test]
 fn invalid_args_and_unsuitable_repositories_do_not_launch_codex() {
     let fixture = Fixture::new();
-    for args in [&["--unknown"][..], &["-C"][..]] {
+    for args in [
+        &["--unknown"][..],
+        &["-C"],
+        &["--sandbox"],
+        &["--sandbox", "invalid"],
+        &["-a"],
+        &["-a", "untrusted"],
+        &["-a", "on-request"],
+        &["-p"],
+        &["--completions", "zsh", "--sandbox", "read-only"],
+        &["--completions", "zsh", "-a", "never"],
+        &["--completions", "zsh", "-p", "test"],
+    ] {
         assert_code(&fixture.invoke(args), 2);
     }
     assert_code(
