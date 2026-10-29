@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3
+
+- Treat documented comparison differences as successful inspection while preserving genuine command, pipeline, validation, and test failures.
+- Keep temporary files in one unique task-owned directory and clean it up on success and failure instead of using fixed shared paths.
+
 ## 0.6.2
 
 - Respect applicable remembered preferences and ongoing restrictions while distinguishing past task instructions and giving current explicit instructions precedence over conflicting older preferences. Clarify that historical editing restrictions do not automatically exclude existing user changes from commits; require applicable exclusion reasons and verification of the resulting commit and working tree.

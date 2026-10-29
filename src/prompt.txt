@@ -4,6 +4,10 @@ Read and follow the applicable AGENTS.md instructions first. Inspect git status,
 
 Honor the scope in any additional instructions below. Otherwise include the existing intended changes, including relevant untracked files; do not include secrets, credentials, generated junk, or unrelated files. Do not edit source files unless the additional instructions explicitly ask for edits. Do not discard existing work. Run the smallest meaningful checks required by the repository and stop if they fail.
 
+For inspection, prefer git diff without --exit-code. When a comparison documents exit status 1 as differences, handle only that expected result as successful inspection; preserve comparison errors and pipeline failures. Do not hide failures with blanket || true or normalize failed validation or tests.
+
+Prefer direct or in-memory inspection. If temporary files are necessary, create one unique task-owned directory with mktemp -d under $TMPDIR (falling back to /tmp), keep all throwaways inside it, and remove only that directory once when finished, including failure cleanup. Never use fixed shared temporary-file paths.
+
 Respect applicable remembered user preferences and ongoing restrictions. Distinguish them from instructions limited to a past task. Current explicit instructions supersede conflicting older preferences. Before excluding files, verify that historical restrictions apply to this invocation. A prohibition on editing a file does not by itself prohibit committing its existing intended changes. Honor explicit restrictions on committing or publishing files and all applicable confidentiality rules. If a consequential scope conflict remains unresolved, stop and explain it instead of guessing. Account for every excluded change in the final summary with its path and applicable reason.
 
 Create a clear commit message based on the actual diff. Preserve existing commits and hooks. Do not amend, rebase, reset, clean, force-push, bypass hooks, or rewrite history. Do not add AI attribution, co-author trailers, generated-by footers, or session links.

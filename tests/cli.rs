@@ -944,6 +944,10 @@ fn scoped_prompt_is_delivered_unchanged_after_dry_run() {
         assert!(text(&dry_run.stdout).ends_with(&format!("{prompt}\n")));
         for policy in [
             "one short progress update after inspection",
+            "prefer git diff without --exit-code",
+            "preserve comparison errors and pipeline failures",
+            "create one unique task-owned directory with mktemp -d",
+            "including failure cleanup",
             "Respect applicable remembered user preferences and ongoing restrictions.",
             "Distinguish them from instructions limited to a past task.",
             "Current explicit instructions supersede conflicting older preferences.",
@@ -963,6 +967,58 @@ fn scoped_prompt_is_delivered_unchanged_after_dry_run() {
         assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
         assert_eq!(fixture.git(&["status", "--porcelain=v1"]), status);
     }
+}
+
+#[test]
+fn comparison_inspection_preserves_real_failures_and_cleans_owned_scratch() {
+    let fixture = Fixture::new();
+    let neighbor = fixture.root.join("codex-commit-neighbor");
+    fs::create_dir(&neighbor).unwrap();
+    fs::write(neighbor.join("keep.txt"), "unrelated work").unwrap();
+    let scratch_log = fixture.root.join("scratch-paths.txt");
+    for (mode, code) in [
+        ("equal", 0),
+        ("different", 0),
+        ("missing", 2),
+        ("validation", 1),
+        ("pipeline", 1),
+    ] {
+        let output = fixture
+            .command(cli())
+            .env("FAKE_CODEX_MODE", "comparison")
+            .env("FAKE_CODEX_COMPARISON", mode)
+            .env("FAKE_CODEX_SCRATCH_LOG", &scratch_log)
+            .bounded_output()
+            .unwrap();
+        assert_code(&output, code);
+        let stderr = text(&output.stderr);
+        if code == 0 {
+            assert_eq!(text(&output.stdout).trim(), "finished");
+            assert!(!stderr.contains("Command failed:"));
+            assert!(
+                !stderr.contains("changed"),
+                "successful raw diff stays hidden"
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+            assert!(stderr.contains("Command failed: fixture comparison"));
+            if mode == "missing" {
+                assert!(stderr.contains("No such file"));
+            }
+        }
+        let paths = fs::read_to_string(&scratch_log).unwrap();
+        for path in paths.lines().map(Path::new) {
+            assert_eq!(path.parent(), Some(fixture.root.as_path()));
+            assert!(!path.exists(), "owned scratch must be removed for {mode}");
+        }
+        assert_eq!(
+            fs::read_to_string(neighbor.join("keep.txt")).unwrap(),
+            "unrelated work"
+        );
+    }
+    let paths = fs::read_to_string(scratch_log).unwrap();
+    let unique: std::collections::BTreeSet<_> = paths.lines().collect();
+    assert_eq!(unique.len(), 5, "each invocation needs unique scratch");
 }
 
 #[test]
