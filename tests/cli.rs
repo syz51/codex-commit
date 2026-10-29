@@ -780,6 +780,191 @@ fn default_push_policy_is_after_additional_instructions() {
     );
 }
 
+fn remove_identity_environment(fixture: &mut Fixture) {
+    for name in [
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ] {
+        fixture.environment.remove(OsStr::new(name));
+    }
+}
+
+#[test]
+fn identity_preflight_respects_environment_config_and_role_overrides() {
+    for identity_source in ["environment", "config", "mixed", "roles", "include"] {
+        let mut fixture = Fixture::new();
+        if identity_source != "environment" {
+            remove_identity_environment(&mut fixture);
+            if identity_source == "roles" {
+                for role in ["author", "committer"] {
+                    fixture.git(&["config", &format!("{role}.name"), "Private Role"]);
+                    fixture.git(&[
+                        "config",
+                        &format!("{role}.email"),
+                        "private@example.invalid",
+                    ]);
+                }
+            } else if identity_source == "include" {
+                let included = fixture.root.join("identity.gitconfig");
+                fs::write(
+                    &included,
+                    "[user]\nname = Private Config\nemail = private@example.invalid\n",
+                )
+                .unwrap();
+                fixture.git(&["config", "include.path", included.to_str().unwrap()]);
+            } else {
+                fixture.git(&["config", "user.name", "Private Config"]);
+                fixture.git(&["config", "user.email", "private@example.invalid"]);
+                if identity_source == "mixed" {
+                    fixture
+                        .environment
+                        .insert("GIT_AUTHOR_NAME".into(), "Private Override".into());
+                    fixture.environment.insert(
+                        "GIT_COMMITTER_EMAIL".into(),
+                        "override@example.invalid".into(),
+                    );
+                }
+            }
+        }
+        fs::write(fixture.repo.join("new.txt"), "identity check\n").unwrap();
+        let before = fs::read(fixture.repo.join(".git/config")).unwrap();
+        let output = fixture
+            .command(cli())
+            .env("FAKE_CODEX_MODE", "git")
+            .bounded_output()
+            .unwrap();
+        assert_code(&output, 0);
+        assert!(
+            !text(&output.stderr).contains("identity is incomplete or inferred"),
+            "{identity_source}: {}",
+            text(&output.stderr)
+        );
+        assert_eq!(fixture.git(&["show", "HEAD:new.txt"]), "identity check");
+        assert_eq!(fs::read(fixture.repo.join(".git/config")).unwrap(), before);
+    }
+}
+
+#[test]
+fn identity_preflight_warns_once_before_codex_without_changing_config() {
+    for flags in [&[][..], &["--verbose"][..], &["--interactive"][..]] {
+        let mut fixture = Fixture::new();
+        remove_identity_environment(&mut fixture);
+        // Explicit name but no email: strict Git resolution must reject fallback.
+        fixture.git(&["config", "user.name", "Private Missing Email"]);
+        let strict = fixture
+            .command(real_git())
+            .args([
+                "-c",
+                "user.useConfigOnly=true",
+                "var",
+                "GIT_COMMITTER_IDENT",
+            ])
+            .bounded_output()
+            .unwrap();
+        assert!(!strict.status.success());
+        fs::write(fixture.repo.join("tracked.txt"), "changed\n").unwrap();
+        let before = fs::read(fixture.repo.join(".git/config")).unwrap();
+        let output = fixture.invoke(flags);
+        assert_code(&output, 0);
+        let stderr = text(&output.stderr);
+        assert_eq!(
+            stderr.matches("identity is incomplete or inferred").count(),
+            1
+        );
+        assert!(
+            stderr.find("identity is incomplete or inferred").unwrap()
+                < stderr.find(" on main;").unwrap()
+        );
+        assert!(!stderr.contains("Private Missing Email"));
+        assert!(fixture.log.exists(), "warning must remain advisory");
+        assert_eq!(fs::read(fixture.repo.join(".git/config")).unwrap(), before);
+    }
+}
+
+#[test]
+fn identity_preflight_skips_clean_push_and_dry_run() {
+    let mut fixture = Fixture::new();
+    remove_identity_environment(&mut fixture);
+    let output = fixture.invoke(&["--push"]);
+    assert_code(&output, 0);
+    assert!(!text(&output.stderr).contains("identity is incomplete or inferred"));
+    fs::write(fixture.repo.join("tracked.txt"), "changed\n").unwrap();
+    let output = fixture.invoke(&["--dry-run"]);
+    assert_code(&output, 0);
+    assert!(!text(&output.stderr).contains("identity is incomplete or inferred"));
+}
+
+#[test]
+fn identity_preflight_warns_when_either_role_is_incomplete() {
+    for role in ["AUTHOR", "COMMITTER"] {
+        let mut fixture = Fixture::new();
+        fixture
+            .environment
+            .remove(OsStr::new(&format!("GIT_{role}_NAME")));
+        fixture
+            .environment
+            .remove(OsStr::new(&format!("GIT_{role}_EMAIL")));
+        fs::write(fixture.repo.join("new.txt"), "new work\n").unwrap();
+        let output = fixture.invoke(&[]);
+        assert_code(&output, 0);
+        assert_eq!(
+            text(&output.stderr)
+                .matches("identity is incomplete or inferred")
+                .count(),
+            1,
+            "{role}"
+        );
+        assert!(fixture.log.exists());
+    }
+}
+
+#[test]
+fn scoped_prompt_is_delivered_unchanged_after_dry_run() {
+    let fixture = Fixture::new();
+    fs::write(fixture.repo.join("tracked.txt"), "existing change\n").unwrap();
+    let config = fs::read(fixture.repo.join(".git/config")).unwrap();
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    let status = fixture.git(&["status", "--porcelain=v1"]);
+    let instructions = "Commit only tracked.txt; do not edit its contents.";
+    for push in [false, true] {
+        let mut flags = Vec::new();
+        if push {
+            flags.push("--push");
+        }
+        flags.push("--dry-run");
+        flags.push(instructions);
+        let dry_run = fixture.invoke(&flags);
+        assert_code(&dry_run, 0);
+        flags.remove(if push { 1 } else { 0 });
+        assert_code(&fixture.invoke(&flags), 0);
+        let call = fixture.invocation();
+        let prompt = call.prompt();
+        assert!(text(&dry_run.stdout).ends_with(&format!("{prompt}\n")));
+        for policy in [
+            "one short progress update after inspection",
+            "Respect applicable remembered user preferences and ongoing restrictions.",
+            "Distinguish them from instructions limited to a past task.",
+            "Current explicit instructions supersede conflicting older preferences.",
+            "verify that historical restrictions apply to this invocation",
+            "A prohibition on editing a file does not by itself prohibit committing its existing intended changes.",
+            "Honor explicit restrictions on committing or publishing files",
+            "Account for every excluded change in the final summary with its path and applicable reason.",
+            "Do not change Git identity or configuration unless explicitly requested.",
+            "After committing, inspect the resulting commit and git status.",
+            instructions,
+        ] {
+            assert!(prompt.contains(policy), "missing {policy}");
+        }
+        let final_policy = prompt.rsplit("Push policy: ").next().unwrap();
+        assert!(final_policy.starts_with(if push { "enabled." } else { "disabled." }));
+        assert_eq!(fs::read(fixture.repo.join(".git/config")).unwrap(), config);
+        assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+        assert_eq!(fixture.git(&["status", "--porcelain=v1"]), status);
+    }
+}
+
 #[test]
 fn options_after_first_instruction_are_instruction_text() {
     let fixture = Fixture::new();

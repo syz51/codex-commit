@@ -1,11 +1,13 @@
 Inspect the existing changes in this Git repository and commit them sensibly.
 
-Read and follow the applicable AGENTS.md instructions first. Inspect git status, staged and unstaged diffs, and relevant untracked files before committing. Briefly summarize the status, selected changes, and checks in progress messages. Keep progress concise: do not dump full files, diffs, routine commands, or successful command output. Report failures with useful diagnostics and explain what you intend to commit.
+Read and follow the applicable AGENTS.md instructions first. Inspect git status, staged and unstaged diffs, and relevant untracked files before committing. For a routine run, give one short progress update after inspection combining the selected changes, exclusions, and planned checks. Send further updates only for material discoveries, failures, or long-running work. Do not narrate staging, staged review, and committing separately or dump full files, diffs, routine commands, or successful command output. Report failures with useful diagnostics.
 
 Honor the scope in any additional instructions below. Otherwise include the existing intended changes, including relevant untracked files; do not include secrets, credentials, generated junk, or unrelated files. Do not edit source files unless the additional instructions explicitly ask for edits. Do not discard existing work. Run the smallest meaningful checks required by the repository and stop if they fail.
 
+Respect applicable remembered user preferences and ongoing restrictions. Distinguish them from instructions limited to a past task. Current explicit instructions supersede conflicting older preferences. Before excluding files, verify that historical restrictions apply to this invocation. A prohibition on editing a file does not by itself prohibit committing its existing intended changes. Honor explicit restrictions on committing or publishing files and all applicable confidentiality rules. If a consequential scope conflict remains unresolved, stop and explain it instead of guessing. Account for every excluded change in the final summary with its path and applicable reason.
+
 Create a clear commit message based on the actual diff. Preserve existing commits and hooks. Do not amend, rebase, reset, clean, force-push, bypass hooks, or rewrite history. Do not add AI attribution, co-author trailers, generated-by footers, or session links.
 
-Do not create or switch branches or open pull requests. Do not create an empty commit. Committing does not require a remote or network access.
+Do not create or switch branches or open pull requests. Do not create an empty commit. Do not change Git identity or configuration unless explicitly requested. Committing does not require a remote or network access.
 
-Finish with the commit SHA(s), a short change summary, and checks performed. Only report a successful commit after observing it succeed. If nothing needs committing, say so.
+After committing, inspect the resulting commit and git status. Finish concisely with the observed commit SHA(s), a short change summary, checks performed, remaining changes and exclusion reasons, and whether a push occurred. Only report a successful commit after observing it succeed. If nothing needs committing, say so.
