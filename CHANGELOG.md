@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2
+
+- Respect applicable remembered preferences and ongoing restrictions while distinguishing past task instructions and giving current explicit instructions precedence over conflicting older preferences. Clarify that historical editing restrictions do not automatically exclude existing user changes from commits; require applicable exclusion reasons and verification of the resulting commit and working tree.
+- Request one combined progress update for routine runs while preserving material updates and failures.
+- Warn before launching Codex for a dirty working tree when Git cannot resolve explicit author and committer identities, without changing configuration or blocking the task.
+
 ## 0.6.1
 
 - Bound compact-mode cancellation to a 250 ms graceful shutdown window, then force-stop the owned process group; a second cancellation forces immediate shutdown while preserving the original signal exit status.

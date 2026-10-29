@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.6.1](https://github.com/syz51/codex-commit/releases/tag/v0.6.1):
+Download the matching archive and `SHA256SUMS` from [v0.6.2](https://github.com/syz51/codex-commit/releases/tag/v0.6.2):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.6.1-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.1/codex-commit-v0.6.1-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.6.1-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.1/codex-commit-v0.6.1-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.6.2-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.2/codex-commit-v0.6.2-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.6.2-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.2/codex-commit-v0.6.2-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.6.1
-archive=codex-commit-v0.6.1-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.6.2
+archive=codex-commit-v0.6.2-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -132,13 +132,17 @@ sandbox = "workspace-write"
 
 Explicit CLI options override this file, which overrides the wrapper defaults independently for each field. Model and reasoning default to `gpt-6-luna` and `max`; unset profile, sandbox, and approval settings are left to Codex. `--config PATH` selects another file (relative to the invoking directory), and `--no-config` bypasses wrapper configuration. `--dry-run` shows the loaded path and merged overrides without resolving Codex's effective settings. Missing default files are ignored; missing explicit files, unreadable files, invalid TOML, unknown fields, and unsupported values fail before Git or Codex runs. Help, version, and shell completion generation do not read configuration. The wrapper never creates or edits configuration files.
 
-The task asks Codex to inspect staged, unstaged, and untracked changes; follow repository instructions; run relevant checks; and commit existing intended changes without rewriting history. By default its final policy forbids pushing, publishing, fetching, or pulling, even when repository or additional instructions mention pushing. Rerun with `--push` to enable pushing.
+The task asks Codex to inspect staged, unstaged, and untracked changes; follow repository instructions; run relevant checks; and commit existing intended changes without rewriting history. Memory settings are inherited from Codex. The prompt respects applicable remembered preferences and ongoing restrictions, distinguishes them from past task instructions, and gives current explicit instructions precedence over conflicting older preferences. Historical restrictions must be checked for applicability: a rule against editing a file does not itself exclude the user's existing changes from a commit. Explicit restrictions on committing or publishing and confidentiality rules still apply. Unresolved consequential scope conflicts stop the task; excluded changes must be explained in the final summary. These are prompt policies, so review the reported scope and resulting commit.
+
+Before launching Codex for a dirty working tree, the wrapper asks Git to resolve both author and committer identities with `user.useConfigOnly=true`. If either identity cannot be resolved without inference, it prints an advisory warning. Git configuration and explicit author/committer environment overrides are respected; no identity or configuration is changed. The warning does not block the task, and clean working trees and `--dry-run` skip this check.
+
+By default the final push policy forbids pushing, publishing, fetching, or pulling, even when repository or additional instructions mention pushing. Rerun with `--push` to enable pushing.
 
 With `--push`, Codex can push existing local commits from a clean worktree. With no upstream, it may set one only when `origin` is the sole remote. Both push modes are prompt policies, not OS-enforced network or Git restrictions; review the streamed output.
 
 Default unattended output immediately reports when a turn starts, shows concise progress on stderr, and keeps the final response on stdout. Codex JSON messages do not identify commentary separately, so the latest message is held until another message or tool activity establishes it as progress, or turn completion establishes it as the final response. Ctrl-C and other cancellation signals are forwarded immediately. If Codex has not exited after a 250 ms grace period, the supervisor force-stops its process group; a second cancellation forces shutdown immediately. Cancellation preserves the original signal exit status even when output is blocked.
 
-It renders Codex's JSON events, hiding the startup banner, echoed prompt, reasoning, routine hook notifications, and successful raw tool output. Failed command output and tool errors remain visible. The task asks for Git status and diff summaries, intended changes, checks, and the observed commit and push results without dumping full files or diffs.
+It renders Codex's JSON events, hiding the startup banner, echoed prompt, reasoning, routine hook notifications, and successful raw tool output. Failed command output and tool errors remain visible. For routine runs, the prompt requests one combined progress update after inspection, with further updates for material discoveries, failures, or long-running work. The final summary includes the observed commit and push results, checks, and remaining changes with exclusion reasons. The renderer preserves messages rather than enforcing an update count.
 
 Use `--verbose` for Codex's full terminal output. Both `--verbose` and `--interactive` replace the Rust process with Codex on Unix, preserving its terminal streams and process identity. Compact mode supervises Codex instead, forwards interrupt and termination signals, and preserves its exit code; invalid or incomplete event streams fail explicitly. Piped or file input is passed to Codex as context; compact mode does not read from an interactive terminal. **Ctrl-C interrupts Codex** in all modes. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
 
@@ -197,7 +201,7 @@ responsible for reviewing message accuracy and their public-data boundary.
 
 ```toml
 [dependencies]
-codex-commit = "=0.6.1"
+codex-commit = "=0.6.2"
 ```
 
 ```rust,no_run

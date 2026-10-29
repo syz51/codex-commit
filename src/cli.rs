@@ -371,6 +371,45 @@ fn without_final_newline(mut output: Vec<u8>) -> Vec<u8> {
     output
 }
 
+fn warn_about_git_identity(root: &Path) -> Result<(), CliError> {
+    if git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+        "could not inspect Git status before checking commit identity",
+    )?
+    .is_empty()
+    {
+        return Ok(());
+    }
+    let mut explicit = true;
+    for identity in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
+        // Let Git resolve configuration, includes, and per-role environment
+        // overrides. Strict resolution disables its machine-local fallback.
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.useConfigOnly=true", "var", identity])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| command_error("git", error))?;
+        if status.code().is_none() {
+            return Err(CliError::new(
+                1,
+                "Git identity check was terminated by a signal",
+            ));
+        }
+        explicit &= status.success();
+    }
+    if !explicit {
+        eprintln!(
+            "codex-commit: warning: Git author or committer identity is incomplete or inferred; configure user.name/user.email or explicit GIT_AUTHOR_* and GIT_COMMITTER_* values before committing. Continuing without changing Git configuration."
+        );
+    }
+    Ok(())
+}
+
 fn task_prompt(options: &Options) -> String {
     let mut prompt = include_str!("prompt.txt").trim_end_matches('\n').to_owned();
     if !options.instructions.is_empty() {
@@ -458,6 +497,8 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliErr
         );
         return Ok(());
     }
+
+    warn_about_git_identity(&root)?;
 
     // Replacing this process preserves the terminal, streams, PID, signals, and
     // Codex's own exit status instead of introducing another process supervisor.
