@@ -1900,13 +1900,21 @@ fn compact_blocked_progress_cancellation_reaps_owned_processes() {
         guard.reaped = true;
         assert_eq!(shell_status(status), 143);
         assert_eq!(kill(Pid::from_raw(codex as i32), None), Err(Errno::ESRCH));
-        assert_eq!(
-            kill(
-                Pid::from_raw(descendant["pid"].as_i64().unwrap() as i32),
-                None
-            ),
-            Err(Errno::ESRCH)
-        );
+        let descendant = Pid::from_raw(descendant["pid"].as_i64().unwrap() as i32);
+        // Forced group shutdown can orphan the grandchild. A killed zombie
+        // still answers signal 0 until the OS reaps it; the wrapper can only
+        // reap its direct child. Require disappearance within the same deadline.
+        loop {
+            match kill(descendant, None) {
+                Err(Errno::ESRCH) => break,
+                Ok(()) => assert!(
+                    Instant::now() < deadline,
+                    "descendant {descendant} must disappear after cancellation"
+                ),
+                result => panic!("could not inspect descendant {descendant}: {result:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
