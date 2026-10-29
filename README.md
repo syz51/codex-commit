@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.6.2](https://github.com/syz51/codex-commit/releases/tag/v0.6.2):
+Download the matching archive and `SHA256SUMS` from [v0.6.3](https://github.com/syz51/codex-commit/releases/tag/v0.6.3):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.6.2-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.2/codex-commit-v0.6.2-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.6.2-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.2/codex-commit-v0.6.2-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.6.3-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.3/codex-commit-v0.6.3-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.6.3-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.3/codex-commit-v0.6.3-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.6.2
-archive=codex-commit-v0.6.2-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.6.3
+archive=codex-commit-v0.6.3-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -142,6 +142,8 @@ With `--push`, Codex can push existing local commits from a clean worktree. With
 
 Default unattended output immediately reports when a turn starts, shows concise progress on stderr, and keeps the final response on stdout. Codex JSON messages do not identify commentary separately, so the latest message is held until another message or tool activity establishes it as progress, or turn completion establishes it as the final response. Ctrl-C and other cancellation signals are forwarded immediately. If Codex has not exited after a 250 ms grace period, the supervisor force-stops its process group; a second cancellation forces shutdown immediately. Cancellation preserves the original signal exit status even when output is blocked.
 
+The prompt prefers inspection commands that succeed when differences are expected; documented comparison status 1 must be handled at the command boundary without masking real comparison, pipeline, validation, or test errors. Temporary files, when needed, belong in one unique task-owned directory under `TMPDIR` (fallback `/tmp`), cleaned up at the end, including failure paths. These are prompt policies; the renderer continues to show nonzero command results as failures.
+
 It renders Codex's JSON events, hiding the startup banner, echoed prompt, reasoning, routine hook notifications, and successful raw tool output. Failed command output and tool errors remain visible. For routine runs, the prompt requests one combined progress update after inspection, with further updates for material discoveries, failures, or long-running work. The final summary includes the observed commit and push results, checks, and remaining changes with exclusion reasons. The renderer preserves messages rather than enforcing an update count.
 
 Use `--verbose` for Codex's full terminal output. Both `--verbose` and `--interactive` replace the Rust process with Codex on Unix, preserving its terminal streams and process identity. Compact mode supervises Codex instead, forwards interrupt and termination signals, and preserves its exit code; invalid or incomplete event streams fail explicitly. Piped or file input is passed to Codex as context; compact mode does not read from an interactive terminal. **Ctrl-C interrupts Codex** in all modes. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
@@ -201,7 +203,7 @@ responsible for reviewing message accuracy and their public-data boundary.
 
 ```toml
 [dependencies]
-codex-commit = "=0.6.2"
+codex-commit = "=0.6.3"
 ```
 
 ```rust,no_run

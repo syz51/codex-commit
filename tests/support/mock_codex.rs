@@ -161,6 +161,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        "comparison" => {
+            // Exercise the documented command-boundary policy with real shell
+            // statuses. This fixture does not demonstrate model compliance.
+            let output = Command::new("/bin/bash")
+                .args([
+                    "-c",
+                    r#"
+set -euo pipefail
+task_scratch=$(mktemp -d "${TMPDIR:-/tmp}/codex-commit.XXXXXX")
+trap 'result=$?; trap - EXIT; rm -r -- "$task_scratch"; exit "$result"' EXIT
+printf '%s\n' "$task_scratch" >> "$FAKE_CODEX_SCRATCH_LOG"
+printf 'original\n' > "$task_scratch/left"
+printf 'original\n' > "$task_scratch/right"
+case "$FAKE_CODEX_COMPARISON" in
+  different) printf 'changed\n' > "$task_scratch/right" ;;
+  missing) rm -- "$task_scratch/right" ;;
+  validation) false ;;
+  pipeline) false | cat ;;
+esac
+if diff -u "$task_scratch/left" "$task_scratch/right"; then
+  :
+else
+  comparison_status=$?
+  if [ "$comparison_status" -ne 1 ]; then exit "$comparison_status"; fi
+fi
+"#,
+                ])
+                .output()?;
+            println!(
+                "{}",
+                json!({"type":"item.completed","item":{"type":"command_execution","command":"fixture comparison with owned scratch cleanup","status":if output.status.success() {"completed"} else {"failed"},"exit_code":output.status.code(),"aggregated_output":format!("{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr))}})
+            );
+            if !output.status.success() {
+                process::exit(output.status.code().unwrap_or(1));
+            }
+        }
         "git" => {
             checked_git(&["add", "--all"]);
             match Command::new("git")
