@@ -3,7 +3,6 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -425,15 +424,15 @@ fn task_prompt(options: &Options) -> String {
     prompt
 }
 
-pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliError> {
+pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliError> {
     let options = match parse(args)? {
         Invocation::Display(output) => {
             print!("{output}");
-            return Ok(());
+            return Ok(0);
         }
         Invocation::Completions(shell) => {
             clap_complete::generate(shell, &mut cli(), "codex-commit", &mut io::stdout());
-            return Ok(());
+            return Ok(0);
         }
         Invocation::Task(options) => options,
     };
@@ -495,13 +494,13 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliErr
                     "Codex exec (no human approval prompts)"
                 }),
         );
-        return Ok(());
+        return Ok(0);
     }
 
     warn_about_git_identity(&root)?;
 
-    // Replacing this process preserves the terminal, streams, PID, signals, and
-    // Codex's own exit status instead of introducing another process supervisor.
+    // All modes retain ownership of the task directory until Codex has exited;
+    // direct output inherits the terminal streams without JSON rendering.
     let mut command = Command::new("codex");
     if let Some(profile) = &options.profile {
         command.arg("--profile").arg(profile);
@@ -528,21 +527,36 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), CliErr
         .arg("-c")
         .arg(format!("model_reasoning_effort=\"{reasoning_effort}\""))
         .args(["-c", "service_tier=\"default\"", "-C"])
-        .arg(&root)
-        .arg("--")
-        .arg(OsStr::new(&prompt))
-        .current_dir(&root);
+        .arg(&root);
     eprintln!(
         "codex-commit: {mode} on {branch}; Push: {push_status} ({model}, {reasoning_effort} reasoning; Ctrl-C to interrupt)"
     );
     io::stdout()
         .flush()
         .map_err(|error| CliError::new(1, format!("could not flush output: {error}")))?;
-    if options.interactive || options.verbose {
-        Err(command_error("codex", command.exec()))
-    } else {
-        crate::process::run(command)
+    // Queue handled signals before creating owned files; the supervisor starts
+    // forwarding them once the child exists and can clean up on cancellation.
+    let signals = crate::process::prepare_signals()?;
+    let scratch = crate::scratch::TaskScratch::new(&root)?;
+    if let Err(error) = scratch.configure(&mut command) {
+        return match scratch.close() {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(CliError::new(
+                error.code,
+                format!("{}; {}", error.message, cleanup.message),
+            )),
+        };
     }
+    command
+        .arg("--")
+        .arg(OsStr::new(&prompt))
+        .current_dir(&root);
+    let output_mode = if options.interactive || options.verbose {
+        crate::process::OutputMode::Direct
+    } else {
+        crate::process::OutputMode::Compact
+    };
+    crate::process::run(command, scratch, output_mode, signals)
 }
 
 #[cfg(test)]

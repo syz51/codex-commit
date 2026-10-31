@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Discover existing instruction files before reading them rather than guessing nested paths.
+- Manage temporary files and uv caches in a private Rust-owned directory in every commit mode, clean it after success, failure, and handled cancellation, and report cleanup errors without masking Codex failures.
+- Supervise verbose and interactive Codex processes while inheriting terminal streams, the caller's job group, and ignored signals; the wrapper and Codex now have separate PIDs.
+
 ## 0.6.3
 
 - Treat documented comparison differences as successful inspection while preserving genuine command, pipeline, validation, and test failures.
