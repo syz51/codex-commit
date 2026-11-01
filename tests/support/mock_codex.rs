@@ -195,6 +195,7 @@ printf temporary > "$TMPDIR/shell-temporary"
                 "TMPDIR": temporary.as_ref().map(|value| value.as_bytes()),
                 "UV_CACHE_DIR": uv_cache.as_ref().map(|value| value.as_bytes()),
                 "PYTHONDONTWRITEBYTECODE": env::var_os("PYTHONDONTWRITEBYTECODE").map(|value| value.as_bytes().to_owned()),
+                "CODEX_COMMIT_EXE": env::var_os("CODEX_COMMIT_EXE").map(|value| value.as_bytes().to_owned()),
             },
         }))?,
     )?;
@@ -218,6 +219,30 @@ printf temporary > "$TMPDIR/shell-temporary"
         }
     }
     match mode.as_str() {
+        "finalize" => {
+            let output =
+                Command::new(env::var_os("CODEX_COMMIT_EXE").expect("native commit helper"))
+                    .args([
+                        "finalize",
+                        "--message",
+                        "Fixture verified commit",
+                        "--",
+                        "tracked.txt",
+                    ])
+                    .output()?;
+            if json_mode() {
+                println!(
+                    "{}",
+                    json!({"type":"item.completed","item":{"type":"command_execution","command":"native finalize","status":if output.status.success() {"completed"} else {"failed"},"exit_code":output.status.code(),"aggregated_output":format!("{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr))}})
+                );
+            } else {
+                io::stdout().write_all(&output.stdout)?;
+                io::stderr().write_all(&output.stderr)?;
+            }
+            if !output.status.success() {
+                process::exit(output.status.code().unwrap_or(1));
+            }
+        }
         "peer-raw" => {
             let terminal = fs::OpenOptions::new()
                 .read(true)

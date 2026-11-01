@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Verify the complete selected staged scope and unresolved conflicts in a native commit helper before invoking Git, avoiding shell NUL transport and exit-status gating failures.
+
 ## 0.6.4
 
 - Default routine commits to Low reasoning, disable native delegation, and supply a bounded metadata-only Git overview with exact repository instruction candidates and compact numstat data.
