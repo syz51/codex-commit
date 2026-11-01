@@ -7,12 +7,39 @@ use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::process::CommandExt;
 use std::process::{self, Command};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 static CHILD: AtomicI32 = AtomicI32::new(0);
+static RESUMED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn resumed(_: i32) {
+    RESUMED.store(true, Ordering::Release);
+}
+
+fn enter_raw_mode() -> Result<(), Box<dyn std::error::Error>> {
+    let stdin = io::stdin();
+    let mut attributes = nix::sys::termios::tcgetattr(&stdin)?;
+    nix::sys::termios::cfmakeraw(&mut attributes);
+    attributes
+        .local_flags
+        .insert(nix::sys::termios::LocalFlags::ISIG);
+    nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &attributes)?;
+    Ok(())
+}
+
+extern "C" fn resized(_: i32) {
+    unsafe {
+        libc::write(
+            libc::STDERR_FILENO,
+            b"resize received\n".as_ptr().cast(),
+            16,
+        );
+    }
+}
 
 extern "C" fn cancelled(signal: i32) {
     // Only async-signal-safe syscalls and a lock-free integer atomic are used.
@@ -84,6 +111,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sigaction(Signal::SIGINT, &action)?;
         sigaction(Signal::SIGTERM, &action)?;
     }
+    if env::var_os("FAKE_CODEX_TRACK_RESIZE").is_some() {
+        let action = SigAction::new(
+            SigHandler::Handler(resized),
+            SaFlags::empty(),
+            SigSet::empty(),
+        );
+        unsafe {
+            sigaction(Signal::SIGWINCH, &action)?;
+        }
+    }
 
     if env::var_os("FAKE_CODEX_IGNORE_CANCELLATION").is_some() {
         let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
@@ -102,14 +139,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<_> = env::args_os().skip(1).collect();
     let argument_bytes: Vec<_> = args.iter().map(|arg| arg.as_bytes()).collect();
+    let temporary = env::var_os("TMPDIR");
+    let uv_cache = env::var_os("UV_CACHE_DIR");
+    let scratch = temporary.as_ref().filter(|root| {
+        uv_cache.as_ref().is_some_and(|cache| {
+            std::path::Path::new(cache) == std::path::Path::new(root).join("uv-cache")
+        })
+    });
+    let scratch_mode = scratch
+        .map(|root| fs::metadata(root).map(|metadata| metadata.permissions().mode() & 0o777))
+        .transpose()?;
+    if let Some(root) = scratch {
+        let root = std::path::Path::new(root);
+        fs::create_dir_all(root.join("nested/check-files"))?;
+        fs::write(
+            root.join("nested/check-files/payload"),
+            "task temporary data",
+        )?;
+        fs::create_dir_all(root.join("uv-cache/nested"))?;
+        fs::write(root.join("uv-cache/nested/payload"), "task cache data")?;
+        if let Some(neighbor) = env::var_os("FAKE_CODEX_SCRATCH_NEIGHBOR") {
+            symlink(neighbor, root.join("unrelated-symlink"))?;
+        }
+    }
+    let mode = env::var("FAKE_CODEX_MODE").unwrap_or_default();
+    if mode == "scratch-shell" {
+        let status = Command::new("/bin/sh")
+            .args([
+                "-eu",
+                "-c",
+                r#"[ "$UV_CACHE_DIR" = "$TMPDIR/uv-cache" ]
+[ "$PYTHONDONTWRITEBYTECODE" = 1 ]
+printf cache > "$UV_CACHE_DIR/shell-cache"
+printf temporary > "$TMPDIR/shell-temporary"
+"#,
+            ])
+            .status()?;
+        if !status.success() {
+            process::exit(status.code().unwrap_or(1));
+        }
+    }
     fs::write(
         env::var_os("FAKE_CODEX_LOG").expect("fixture log path"),
         serde_json::to_vec(&json!({
             "argv": argument_bytes,
             "cwd": env::current_dir()?.as_os_str().as_bytes(),
             "pid": process::id(),
+            "supervisor": unsafe { libc::getppid() },
+            "caller_group": unsafe { libc::getpgid(libc::getppid()) },
+            "pgid": unsafe { libc::getpgrp() },
+            "foreground_group": unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) },
+            "scratch": scratch.map(|root| root.as_bytes()),
+            "scratch_mode": scratch_mode,
+            "environment": {
+                "TMPDIR": temporary.as_ref().map(|value| value.as_bytes()),
+                "UV_CACHE_DIR": uv_cache.as_ref().map(|value| value.as_bytes()),
+                "PYTHONDONTWRITEBYTECODE": env::var_os("PYTHONDONTWRITEBYTECODE").map(|value| value.as_bytes().to_owned()),
+            },
         }))?,
     )?;
+    if env::var_os("FAKE_CODEX_REPLACE_SCRATCH").is_some() {
+        let root = scratch.expect("replacement requires managed scratch");
+        fs::remove_dir_all(root)?;
+        fs::write(root, "replacement must remain on cleanup failure")?;
+    }
 
     if json_mode() {
         println!(
@@ -124,9 +217,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    let mode = env::var("FAKE_CODEX_MODE").unwrap_or_default();
     match mode.as_str() {
-        "stream" | "wait" | "wait-child" => {
+        "peer-raw" => {
+            let terminal = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")?;
+            let mut attributes = nix::sys::termios::tcgetattr(&terminal)?;
+            nix::sys::termios::cfmakeraw(&mut attributes);
+            attributes
+                .local_flags
+                .insert(nix::sys::termios::LocalFlags::ISIG);
+            nix::sys::termios::tcsetattr(
+                &terminal,
+                nix::sys::termios::SetArg::TCSANOW,
+                &attributes,
+            )?;
+            println!("live peer raw ready");
+            io::stdout().flush()?;
+            let gate = env::var_os("FAKE_CODEX_INPUT_GATE").expect("peer input gate");
+            while !std::path::Path::new(&gate).is_file() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        "tty-read" | "tty-native-read" | "background-read" => {
+            if mode == "background-read" {
+                println!("background job running");
+                io::stdout().flush()?;
+                let gate = env::var_os("FAKE_CODEX_INPUT_GATE").expect("background input gate");
+                while !std::path::Path::new(&gate).is_file() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            if mode != "tty-native-read"
+                && unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) != libc::getpgrp() }
+            {
+                return Err("mock must own terminal foreground before reading".into());
+            }
+            println!("terminal input ready");
+            io::stdout().flush()?;
+            loop {
+                let mut input = String::new();
+                if io::stdin().read_line(&mut input)? == 0 {
+                    break;
+                }
+                println!("terminal input: {}", input.trim_end());
+                io::stdout().flush()?;
+            }
+        }
+        "signal-int" | "signal-pipe" => {
+            let default = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+            let signal = if mode == "signal-int" {
+                Signal::SIGINT
+            } else {
+                Signal::SIGPIPE
+            };
+            unsafe {
+                sigaction(signal, &default)?;
+                libc::kill(libc::getpid(), signal as i32);
+            }
+            return Err("signal should terminate mock".into());
+        }
+        "stream" | "wait" | "wait-child" | "raw-wait" => {
+            if mode == "raw-wait" {
+                enter_raw_mode()?;
+                let action = SigAction::new(
+                    SigHandler::Handler(resumed),
+                    SaFlags::empty(),
+                    SigSet::empty(),
+                );
+                unsafe {
+                    sigaction(Signal::SIGCONT, &action)?;
+                }
+            }
             if mode == "wait-child" {
                 let child = Command::new("/bin/sleep").arg("60").spawn()?;
                 let pid = i32::try_from(child.id())?;
@@ -157,6 +320,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(Duration::from_millis(800));
             } else {
                 loop {
+                    if mode == "raw-wait" && RESUMED.swap(false, Ordering::AcqRel) {
+                        enter_raw_mode()?;
+                        println!("raw mode resumed");
+                        io::stdout().flush()?;
+                    }
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }

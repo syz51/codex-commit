@@ -3,7 +3,7 @@
 [![CI](https://github.com/syz51/codex-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/syz51/codex-commit/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/codex-commit.svg)](https://crates.io/crates/codex-commit)
 
-One command to inspect and commit your existing Git changes with **GPT-6 Luna at Max reasoning by default**. Add `--push` to push afterward. A small Rust executable that launches Codex CLI with concise progress, a final summary, and normal signal handling.
+One command to inspect and commit your existing Git changes with **GPT-6 Luna at Low reasoning by default**. Add `--push` to push afterward. A small Rust executable that launches Codex CLI with concise progress, a final summary, and normal signal handling.
 
 ```sh
 codex-commit
@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.6.3](https://github.com/syz51/codex-commit/releases/tag/v0.6.3):
+Download the matching archive and `SHA256SUMS` from [v0.6.4](https://github.com/syz51/codex-commit/releases/tag/v0.6.4):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.6.3-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.3/codex-commit-v0.6.3-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.6.3-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.3/codex-commit-v0.6.3-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.6.4-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.4/codex-commit-v0.6.4-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.6.4-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.4/codex-commit-v0.6.4-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.6.3
-archive=codex-commit-v0.6.3-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.6.4
+archive=codex-commit-v0.6.4-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -114,7 +114,7 @@ Options precede optional instructions. Use `--` before instructions beginning wi
 
 The default mode runs unattended and exits when Codex finishes. Both modes leave sandbox settings to your Codex configuration, including trusted project settings. `-p` / `--profile` selects a Codex profile, and `--sandbox` overrides the sandbox for this run. The wrapper does not read or change your Codex configuration or automatically widen access when a commit is blocked. Configured sandbox or network restrictions may block staging, committing protected Git metadata, or pushing. Codex reports the failure; use `--interactive` for required human approval or explicitly override permissions.
 
-Unattended `codex exec` cannot prompt for human approval; configured automatic review may handle eligible approval requests. Use `--interactive` when human approval is needed; its terminal stays open for follow-up messages and its approval policy follows Codex configuration unless overridden. `-a` / `--ask-for-approval` accepts `on-request` (requires `--interactive`) or `never`. To explicitly restore the former unattended full-access behavior, use `--sandbox danger-full-access -a never`; run it only in repositories you trust. Both modes default to GPT-6 Luna and Max reasoning. `-m` / `--model` and `--reasoning-effort` override these selections. Reasoning levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; actual model availability and supported effort levels are checked by Codex. The normal service tier is always selected, without enabling Fast mode.
+Unattended `codex exec` cannot prompt for human approval; configured automatic review may handle eligible approval requests. Use `--interactive` when human approval is needed; its terminal stays open for follow-up messages and its approval policy follows Codex configuration unless overridden. `-a` / `--ask-for-approval` accepts `on-request` (requires `--interactive`) or `never`. To explicitly restore the former unattended full-access behavior, use `--sandbox danger-full-access -a never`; run it only in repositories you trust. Both modes default to GPT-6 Luna and Low reasoning. `-m` / `--model` and `--reasoning-effort` override these selections. Reasoning levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; actual model availability and supported effort levels are checked by Codex. The normal service tier is always selected, without enabling Fast mode.
 
 ### Global configuration
 
@@ -124,15 +124,37 @@ Create the file yourself if you want wrapper defaults; all fields are optional:
 
 ```toml
 model = "gpt-6-luna"
-model_reasoning_effort = "max"
+model_reasoning_effort = "low"
 profile = "personal"
 sandbox = "workspace-write"
 # approval_policy = "on-request" # requires --interactive when set
 ```
 
-Explicit CLI options override this file, which overrides the wrapper defaults independently for each field. Model and reasoning default to `gpt-6-luna` and `max`; unset profile, sandbox, and approval settings are left to Codex. `--config PATH` selects another file (relative to the invoking directory), and `--no-config` bypasses wrapper configuration. `--dry-run` shows the loaded path and merged overrides without resolving Codex's effective settings. Missing default files are ignored; missing explicit files, unreadable files, invalid TOML, unknown fields, and unsupported values fail before Git or Codex runs. Help, version, and shell completion generation do not read configuration. The wrapper never creates or edits configuration files.
+Explicit CLI options override this file, which overrides the wrapper defaults independently for each field. Model and reasoning default to `gpt-6-luna` and `low`; unset profile, sandbox, and approval settings are left to Codex. `--config PATH` selects another file (relative to the invoking directory), and `--no-config` bypasses wrapper configuration. `--dry-run` shows the loaded path and merged overrides without resolving Codex's effective settings. Missing default files are ignored; missing explicit files, unreadable files, invalid TOML, unknown fields, and unsupported values fail before Git or Codex runs. Help, version, and shell completion generation do not read configuration. The wrapper never creates or edits configuration files.
 
-The task asks Codex to inspect staged, unstaged, and untracked changes; follow repository instructions; run relevant checks; and commit existing intended changes without rewriting history. Memory settings are inherited from Codex. The prompt respects applicable remembered preferences and ongoing restrictions, distinguishes them from past task instructions, and gives current explicit instructions precedence over conflicting older preferences. Historical restrictions must be checked for applicability: a rule against editing a file does not itself exclude the user's existing changes from a commit. Explicit restrictions on committing or publishing and confidentiality rules still apply. Unresolved consequential scope conflicts stop the task; excluded changes must be explained in the final summary. These are prompt policies, so review the reported scope and resulting commit.
+For an explicitly smaller tool catalog, you can select your own Codex profile with `--profile commit`. Codex profile files live next to its `config.toml`, at `$CODEX_HOME/commit.config.toml` (default `~/.codex/commit.config.toml`); this is separate from the wrapper configuration above. For example:
+
+```toml
+web_search = "disabled"
+
+[features]
+apps = false
+
+[skills]
+max_context_tokens = 2000
+
+# Disable only servers you know this task does not need:
+# [mcp_servers.your_server]
+# enabled = false
+```
+
+These opt-in settings follow the [official Codex configuration reference](https://developers.openai.com/codex/config-reference/). A smaller skill catalog or disabled tools may remove relevant conventions or capabilities; choose settings for your workflow. The wrapper leaves these settings, memories, hooks, plugins, shell snapshots, and loaded project guidance inherited. It creates no profile and changes no saved Codex settings.
+
+The task asks Codex to capture the main ideas of existing staged, unstaged, and relevant untracked changes in a concise commit. It requests one focused inspection pass with minimal context. For large tests/docs/lockfiles it starts with summaries and representative hunks, scans all added lines of summarized files (including entire untracked files) for credential indicators and leftover conflict markers, and expands unresolved scope, meaning, confidentiality, or omitted content. Marker matches require inspection rather than an automatic gate; heading underlines alone are not conflicts. This is heuristic inspection, not a guarantee that every secret is detected. Before committing, staged paths must match the explicit selected paths, using rename detection disabled so both sides of a selected rename appear, and the index must contain no unresolved conflicts; verification errors must stop the batched commit. It accounts for every required check, preserves failing check exit codes and Git hooks, and treats whitespace as advisory unless applicable instructions require a gate. It avoids repeated patch dumps and nested model sessions. Rust disables Codex's native delegation features for every commit mode; the prompt also forbids shell-launched nested models. Higher reasoning remains available through configuration or `--reasoning-effort`.
+
+Memory settings are inherited from Codex. The prompt respects applicable remembered preferences and ongoing restrictions, distinguishes them from past task instructions, and gives current explicit instructions precedence over conflicting older preferences. A rule against editing a file does not itself exclude the user's existing changes from a commit. Explicit restrictions on committing or publishing and confidentiality rules still apply. Unresolved consequential scope conflicts stop the task; excluded changes must be explained in the final summary. These remain prompt policies, so review the reported scope and resulting commit.
+
+See [local benchmark observations](docs/PERFORMANCE.md) for the workloads, request counts, iterations, and measurement limits. Prompt-directed batching and scope checks remain model-dependent.
 
 Before launching Codex for a dirty working tree, the wrapper asks Git to resolve both author and committer identities with `user.useConfigOnly=true`. If either identity cannot be resolved without inference, it prints an advisory warning. Git configuration and explicit author/committer environment overrides are respected; no identity or configuration is changed. The warning does not block the task, and clean working trees and `--dry-run` skip this check.
 
@@ -140,13 +162,19 @@ By default the final push policy forbids pushing, publishing, fetching, or pulli
 
 With `--push`, Codex can push existing local commits from a clean worktree. With no upstream, it may set one only when `origin` is the sole remote. Both push modes are prompt policies, not OS-enforced network or Git restrictions; review the streamed output.
 
-Default unattended output immediately reports when a turn starts, shows concise progress on stderr, and keeps the final response on stdout. Codex JSON messages do not identify commentary separately, so the latest message is held until another message or tool activity establishes it as progress, or turn completion establishes it as the final response. Ctrl-C and other cancellation signals are forwarded immediately. If Codex has not exited after a 250 ms grace period, the supervisor force-stops its process group; a second cancellation forces shutdown immediately. Cancellation preserves the original signal exit status even when output is blocked.
+Default unattended output immediately reports when a turn starts, shows concise progress on stderr, and keeps the final response on stdout. Codex JSON messages do not identify commentary separately, so the latest message is held until another message or tool activity establishes it as progress, or turn completion establishes it as the final response. Supported cancellation signals sent specifically to the supervisor are forwarded immediately; use SIGTERM for explicit cancellation of a terminal-attached macOS direct run. If Codex has not exited after a 250 ms grace period, the supervisor force-stops its owned process group in compact mode, or Codex's PID in direct modes; a second cancellation forces the same shutdown immediately. Task cleanup then completes before the wrapper exits with the original signal, even when output is blocked.
 
-The prompt prefers inspection commands that succeed when differences are expected; documented comparison status 1 must be handled at the command boundary without masking real comparison, pipeline, validation, or test errors. Temporary files, when needed, belong in one unique task-owned directory under `TMPDIR` (fallback `/tmp`), cleaned up at the end, including failure paths. These are prompt policies; the renderer continues to show nonzero command results as failures.
+Rust supplies a bounded, metadata-only Git overview: changed paths and index/worktree states, staged/unstaged numstat, byte sizes for untracked regular files, and existing instruction candidates from exact probes at the Git root and changed-path parents. Size probes do not follow file symlinks; unavailable sizes are reported as advisory metadata errors. Root guidance and `CONTRIBUTING.md` come first. Candidates prefer `AGENTS.override.md` over `AGENTS.md`; the wrapper never discovers guidance above the Git root or through directory symlinks escaping it. Already loaded global guidance, configured fallback filenames, and explicit references remain authoritative. A complete candidate list should be reused without duplicate probes or rereading loaded guidance. It includes no source, patch, or instruction-file contents.
+
+Omitted entries, truncated numstat, and instruction probe errors are explicit and bounded. Probe errors are advisory to the launcher; the agent must report and resolve applicable guidance errors before committing. Git failures remain fatal. If the full status exceeds 8 MiB, Rust retries with untracked directories collapsed; selected directories must be expanded for scope and instructions before staging. An oversized collapsed status still fails clearly. The agent must resolve relevant omissions and verify staged content because the snapshot can become stale. The prompt forbids recursive searches through parents, siblings, or home directories and handles only documented comparison status 1 as differences without masking genuine command or pipeline errors. The renderer continues to show nonzero command results as failures.
+
+In every commit mode, Rust creates one private task directory (`0700`) under `TMPDIR` (fallback `/tmp`) and supplies its absolute path as the child's `TMPDIR`. Relative bases resolve from the invoking directory; bases inside the Git working tree are rejected so temporary artifacts cannot enter the commit. It also selects a fresh `UV_CACHE_DIR` inside that directory and sets `PYTHONDONTWRITEBYTECODE=1`, overriding those three values for this invocation. Per-key `shell_environment_policy.set` overrides pass the values to Codex's command environment without replacing unrelated settings. Codex's include allowlists or shell startup files can still remove or change them. The wrapper passes `--add-dir` for this private directory so workspace-write mode can use it; this does not select a different sandbox or grant Git metadata access. Read-only and managed restrictions still apply. User configuration, authentication, and session-storage locations are unchanged.
+
+Rust removes its task directory after reaping Codex, on success, failure, and handled cancellation, independently of output rendering. Compact mode also stops its owned process group. Direct modes keep the caller's job group and target only Codex's PID; the shell and Codex's normal shutdown manage pipeline peers and descendants. Cleanup failures report the path and make an otherwise successful run fail; an existing Codex failure keeps its exit status. Direct output already streamed before cleanup remains visible. During cancellation, cleanup diagnostics are best effort so a blocked stderr cannot prevent exit. Only the owned directory is removed, and symlink targets outside it are preserved. Removing many files can extend shutdown after Codex stops; killing or crashing the wrapper, or system shutdown, can prevent cleanup. A fresh uv cache can require downloads when dependencies are unavailable locally. Normal ignored project build caches are reused unless explicit instructions require disposable builds; new throwaways and transcripts belong in the managed directory. `--dry-run`, help, and completions create no task directory.
 
 It renders Codex's JSON events, hiding the startup banner, echoed prompt, reasoning, routine hook notifications, and successful raw tool output. Failed command output and tool errors remain visible. For routine runs, the prompt requests one combined progress update after inspection, with further updates for material discoveries, failures, or long-running work. The final summary includes the observed commit and push results, checks, and remaining changes with exclusion reasons. The renderer preserves messages rather than enforcing an update count.
 
-Use `--verbose` for Codex's full terminal output. Both `--verbose` and `--interactive` replace the Rust process with Codex on Unix, preserving its terminal streams and process identity. Compact mode supervises Codex instead, forwards interrupt and termination signals, and preserves its exit code; invalid or incomplete event streams fail explicitly. Piped or file input is passed to Codex as context; compact mode does not read from an interactive terminal. **Ctrl-C interrupts Codex** in all modes. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
+Use `--verbose` for Codex's full terminal output. All modes run Codex as a supervised child with a separate PID. Verbose and interactive modes inherit standard input, output, error, and the shell's job group, preserving normal pipeline, foreground, and background behavior. When Codex stops, the wrapper also suspends; the job-control shell manages terminal modes and `fg` resumes the job. The wrapper leaves terminal settings to Codex and the shell so it cannot reset another pipeline program's input mode. Inherited ignored signals, such as `nohup`'s SIGHUP setting, are preserved. Kernel-generated terminal signals already reach the whole foreground job and are not forwarded a second time. On macOS, the signal metadata can be ambiguous: terminal-attached direct runs leave ambiguous SIGINT, SIGQUIT, SIGTSTP, and SIGWINCH to the native job, including signals addressed only to the wrapper. Use SIGTERM to cancel that supervisor, the shell's job-control commands, or Codex's child PID for precise application signals. Headless direct runs still forward targeted interrupts. Compact mode renders JSON events and fails explicitly on invalid or incomplete streams. Piped or file input is passed to Codex as context; compact mode does not read from an interactive terminal. Cancellation cannot undo an operation that already completed; inspect local and remote state before retrying.
 
 Use the printed session ID to continue a run interactively:
 
@@ -203,7 +231,7 @@ responsible for reviewing message accuracy and their public-data boundary.
 
 ```toml
 [dependencies]
-codex-commit = "=0.6.3"
+codex-commit = "=0.6.4"
 ```
 
 ```rust,no_run

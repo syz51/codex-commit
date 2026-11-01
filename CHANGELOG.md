@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+## 0.6.4
+
+- Default routine commits to Low reasoning, disable native delegation, and supply a bounded metadata-only Git overview with exact repository instruction candidates and compact numstat data.
+- Reuse instruction discovery, collapse oversized untracked listings, report advisory probe errors, and keep required-check failures visible while treating whitespace as advisory unless required.
+- Reuse normal ignored build caches, scan summarized additions and untracked content for credential indicators and conflict markers, and gate commits on selected staged paths and unresolved conflicts.
+- Discover existing instruction files before reading them rather than guessing nested paths.
+- Manage temporary files and uv caches in a private Rust-owned directory in every commit mode, clean it after success, failure, and handled cancellation, and report cleanup errors without masking Codex failures.
+- Supervise verbose and interactive Codex processes while inheriting terminal streams, the caller's job group, and ignored signals; the wrapper and Codex now have separate PIDs.
+
 ## 0.6.3
 
 - Treat documented comparison differences as successful inspection while preserving genuine command, pipeline, validation, and test failures.
