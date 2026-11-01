@@ -2771,6 +2771,23 @@ fn real_shell_shared_process_group_is_not_forcibly_stopped() {
     terminal.master.write_all(b"printf 'SHARED_%s\\n' usable; kill -TERM \"$job\"; kill -CONT \"$job\"; wait \"$job\"; printf 'SHARED_%s\\n' done\n").unwrap();
     terminal.wait_for("SHARED_usable");
     terminal.wait_for("SHARED_done");
+    // Bash may return from wait with a queued stopped-job status before the
+    // continued wrapper exits. The shell marker therefore proves usability,
+    // not completion: observe the wrapper's exit before checking its cleanup.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        terminal.drain();
+        match kill(Pid::from_raw(wrapper as i32), None) {
+            Err(Errno::ESRCH) => break,
+            Ok(()) => assert!(
+                Instant::now() < deadline,
+                "continued wrapper must exit before cleanup is checked: {}",
+                text(&terminal.output)
+            ),
+            Err(error) => panic!("could not observe wrapper exit: {error}"),
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     fixture.invocation().assert_scratch_removed();
     terminal.master.write_all(b"exit 0\n").unwrap();
     assert_eq!(shell_status(terminal.wait_exit()), 0);
