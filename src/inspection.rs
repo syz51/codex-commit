@@ -508,6 +508,52 @@ mod tests {
         empty_repository_and_command_failure();
         collapsed_status_preserves_scope_and_reports_overflow();
         staged_paths_include_both_move_sides();
+        unmerged_index_must_be_checked_before_staging();
+    }
+
+    fn unmerged_index_must_be_checked_before_staging() {
+        let fixture = Fixture::new();
+        fixture.write("conflicted", "base\n");
+        fixture.git(&["add", "."]);
+        fixture.git(&["commit", "-qm", "initial"]);
+        fixture.git(&["branch", "other"]);
+        fixture.write("conflicted", "main change\n");
+        fixture.git(&["commit", "-qam", "main"]);
+        fixture.git(&["switch", "other"]);
+        fixture.write("conflicted", "other change\n");
+        fixture.git(&["commit", "-qam", "other"]);
+        fixture.git(&["switch", "main"]);
+        let merge = Command::new("git")
+            .arg("-C")
+            .arg(&fixture.root)
+            .args(["merge", "--no-edit", "other"])
+            .output()
+            .unwrap();
+        assert_eq!(merge.status.code(), Some(1), "{merge:?}");
+        assert!(!fixture.git(&["ls-files", "--unmerged", "-z"]).is_empty());
+        let snapshot = fixture.snapshot();
+        assert!(
+            snapshot["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|change| {
+                    change["path"] == "conflicted"
+                        && change["index"] == "U"
+                        && change["worktree"] == "U"
+                })
+        );
+        let content = fs::read(fixture.root.join("conflicted")).unwrap();
+        assert!(
+            String::from_utf8_lossy(&content)
+                .lines()
+                .any(|line| line.starts_with("<<<<<<<"))
+        );
+        // Staging clears the index conflict even though the marker content is
+        // untouched, so a post-staging index check cannot replace the precheck.
+        fixture.git(&["add", "--", "conflicted"]);
+        assert!(fixture.git(&["ls-files", "--unmerged", "-z"]).is_empty());
+        assert_eq!(fs::read(fixture.root.join("conflicted")).unwrap(), content);
     }
 
     fn staged_paths_include_both_move_sides() {
