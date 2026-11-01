@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.5
+
 - Verify the complete selected staged scope and unresolved conflicts in a native commit helper before invoking Git, avoiding shell NUL transport and exit-status gating failures.
 
 ## 0.6.4
