@@ -4,6 +4,8 @@ compile_error!("codex-commit currently supports macOS and Linux (Unix) only");
 #[cfg(unix)]
 mod cli;
 #[cfg(unix)]
+mod finalize;
+#[cfg(unix)]
 mod generate_cli;
 #[cfg(unix)]
 mod inspection;
@@ -17,7 +19,10 @@ mod scratch;
 #[cfg(unix)]
 fn main() {
     let mut args = std::env::args_os().skip(1).peekable();
-    let result = if args.peek().is_some_and(|arg| arg == "generate") {
+    let result = if args.peek().is_some_and(|arg| arg == "finalize") {
+        args.next();
+        finalize::run(args)
+    } else if args.peek().is_some_and(|arg| arg == "generate") {
         args.next();
         generate_cli::run(args).map(|()| 0)
     } else {

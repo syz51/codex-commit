@@ -10,7 +10,7 @@ use tempfile::{Builder, TempDir};
 
 pub(crate) struct TaskScratch {
     directory: TempDir,
-    environment: [(&'static str, String); 3],
+    environment: [(&'static str, String); 4],
 }
 
 impl TaskScratch {
@@ -36,6 +36,16 @@ impl TaskScratch {
     }
 
     fn create_in(base: &Path) -> Result<Self, CliError> {
+        let executable = env::current_exe()
+            .map_err(|error| CliError::new(1, format!("could not locate commit helper: {error}")))?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| {
+                CliError::new(
+                    1,
+                    "commit helper path must be valid UTF-8 for Codex configuration",
+                )
+            })?;
         // Resolve before Codex changes its working directory. In particular,
         // relative TMPDIR values belong to the invoking directory, not the repo.
         let base = fs::canonicalize(base).map_err(|error| {
@@ -89,6 +99,7 @@ impl TaskScratch {
             ("TMPDIR", root.clone()),
             ("UV_CACHE_DIR", format!("{root}/uv-cache")),
             ("PYTHONDONTWRITEBYTECODE", "1".to_owned()),
+            ("CODEX_COMMIT_EXE", executable),
         ];
         Ok(Self {
             directory,
