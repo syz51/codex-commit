@@ -6,6 +6,8 @@ mod cli;
 #[cfg(unix)]
 mod generate_cli;
 #[cfg(unix)]
+mod inspection;
+#[cfg(unix)]
 mod output;
 #[cfg(unix)]
 mod process;

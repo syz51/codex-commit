@@ -373,7 +373,7 @@ fn render_formula(version: &str, contents: &str) -> Result<String> {
       output = shell_output("#{{bin}}/codex-commit --no-config --dry-run")
       assert_match "Push: disabled", output
       assert_match "Model: gpt-6-luna", output
-      assert_match "Reasoning: max", output
+      assert_match "Reasoning: low", output
     end
   end
 end
@@ -485,6 +485,7 @@ mod tests {
         assert!(formula.find("depends_on :macos").unwrap() < formula.find("on_macos do").unwrap());
         assert!(formula.contains("with_env(PATH: \"/usr/bin:/bin\")"));
         assert!(formula.contains("assert_match \"Push: disabled\""));
+        assert!(formula.contains("assert_match \"Reasoning: low\""));
         assert!(formula.contains(
             "generate_completions_from_executable(bin/\"codex-commit\", \"--completions\")"
         ));

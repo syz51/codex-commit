@@ -11,8 +11,10 @@ Development and release tooling use only the pinned Rust toolchain in `rust-tool
 ```sh
 make check
 make test
-cargo publish -p codex-commit --dry-run --locked
+cargo publish -p codex-commit --dry-run --locked --allow-dirty
 ```
+
+The package dry run verifies the current working tree without uploading it; `--allow-dirty` permits checking intended changes before committing. Report each required check accurately, including any failure or incomplete run.
 
 `make test` runs `cargo test --workspace --locked`, including the Rust mock Codex executable, structured event rendering and failure handling, disposable local Git remotes, real terminal cancellation and child cleanup, and release-helper validation. Exercise compact rendering and direct terminal supervision when changing process handling. Tests do not need Codex login or network push credentials. CI also checks installation on Linux, Apple Silicon macOS, and Intel macOS. Put manual-test artifacts in one scratch directory and remove them after testing.
 
