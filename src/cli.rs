@@ -374,8 +374,7 @@ fn warn_about_git_identity(root: &Path, dirty: bool) -> Result<(), CliError> {
     if !dirty {
         return Ok(());
     }
-    let mut explicit = true;
-    for identity in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
+    let check_identity = |identity| {
         // Let Git resolve configuration, includes, and per-role environment
         // overrides. Strict resolution disables its machine-local fallback.
         let status = Command::new("git")
@@ -393,9 +392,21 @@ fn warn_about_git_identity(root: &Path, dirty: bool) -> Result<(), CliError> {
                 "Git identity check was terminated by a signal",
             ));
         }
-        explicit &= status.success();
-    }
-    if !explicit {
+        Ok(status.success())
+    };
+    // Resolve independent roles concurrently, but join both before propagating
+    // errors so no Git child outlives preflight. Keep author-first precedence.
+    let (author, committer) = std::thread::scope(|scope| {
+        let author = scope.spawn(|| check_identity("GIT_AUTHOR_IDENT"));
+        let committer = check_identity("GIT_COMMITTER_IDENT");
+        let author = author
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (author, committer)
+    });
+    let author = author?;
+    let committer = committer?;
+    if !author || !committer {
         eprintln!(
             "codex-commit: warning: Git author or committer identity is incomplete or inferred; configure user.name/user.email or explicit GIT_AUTHOR_* and GIT_COMMITTER_* values before committing. Continuing without changing Git configuration."
         );

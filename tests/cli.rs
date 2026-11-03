@@ -1023,6 +1023,64 @@ fn remove_identity_environment(fixture: &mut Fixture) {
 }
 
 #[test]
+fn identity_preflight_overlaps_roles_and_joins_before_signal_error() {
+    for signal_role in ["none", "author", "committer"] {
+        let fixture = Fixture::new();
+        fs::write(fixture.repo.join("new.txt"), "new work\n").unwrap();
+        let wrapper = fixture.bin.join("git");
+        fs::write(
+            &wrapper,
+            r#"#!/bin/sh
+for last do :; done
+case "$last" in
+GIT_AUTHOR_IDENT) role=author; peer=committer ;;
+GIT_COMMITTER_IDENT) role=committer; peer=author ;;
+*) exec "$REAL_GIT" "$@" ;;
+esac
+: > "$IDENTITY_SYNC/$role.started"
+attempt=0
+while [ ! -f "$IDENTITY_SYNC/$peer.started" ]; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 200 ] || exit 99
+    /bin/sleep 0.01
+done
+if [ "$role" = "$SIGNAL_ROLE" ]; then
+    kill -TERM $$
+fi
+: > "$IDENTITY_SYNC/$role.finished"
+exit 0
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = fixture
+            .command(cli())
+            .env("REAL_GIT", real_git())
+            .env("IDENTITY_SYNC", &fixture.root)
+            .env("SIGNAL_ROLE", signal_role)
+            .bounded_output()
+            .unwrap();
+        if signal_role != "none" {
+            let survivor = if signal_role == "author" {
+                "committer"
+            } else {
+                "author"
+            };
+            assert!(fixture.root.join(format!("{survivor}.finished")).exists());
+            assert_code(&output, 1);
+            assert!(text(&output.stderr).contains("Git identity check was terminated by a signal"));
+            assert!(!fixture.log.exists());
+        } else {
+            assert_code(&output, 0);
+            assert!(fixture.root.join("author.finished").exists());
+            assert!(fixture.root.join("committer.finished").exists());
+            assert!(!text(&output.stderr).contains("identity is incomplete or inferred"));
+            assert!(fixture.log.exists());
+        }
+    }
+}
+
+#[test]
 fn identity_preflight_respects_environment_config_and_role_overrides() {
     for identity_source in ["environment", "config", "mixed", "roles", "include"] {
         let mut fixture = Fixture::new();

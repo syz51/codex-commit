@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.6
+
+- Resolve Git author and committer identities concurrently during dirty-tree preflight while preserving warning behavior, error precedence, and child cleanup.
+- Cover overlapping identity checks and termination of either check with regression tests.
+
 ## 0.6.5
 
 - Verify the complete selected staged scope and unresolved conflicts in a native commit helper before invoking Git, avoiding shell NUL transport and exit-status gating failures.
