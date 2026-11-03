@@ -39,18 +39,18 @@ Cargo compiles the published source for your machine and normally installs into 
 
 ### Prebuilt macOS downloads
 
-Download the matching archive and `SHA256SUMS` from [v0.6.6](https://github.com/syz51/codex-commit/releases/tag/v0.6.6):
+Download the matching archive and `SHA256SUMS` from [v0.6.7](https://github.com/syz51/codex-commit/releases/tag/v0.6.7):
 
 | Mac | Archive |
 | --- | --- |
-| Apple Silicon (M-series) | [`codex-commit-v0.6.6-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.6/codex-commit-v0.6.6-aarch64-apple-darwin.tar.gz) |
-| Intel | [`codex-commit-v0.6.6-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.6/codex-commit-v0.6.6-x86_64-apple-darwin.tar.gz) |
+| Apple Silicon (M-series) | [`codex-commit-v0.6.7-aarch64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.7/codex-commit-v0.6.7-aarch64-apple-darwin.tar.gz) |
+| Intel | [`codex-commit-v0.6.7-x86_64-apple-darwin.tar.gz`](https://github.com/syz51/codex-commit/releases/download/v0.6.7/codex-commit-v0.6.7-x86_64-apple-darwin.tar.gz) |
 
 For example, on Apple Silicon:
 
 ```sh
-release=https://github.com/syz51/codex-commit/releases/download/v0.6.6
-archive=codex-commit-v0.6.6-aarch64-apple-darwin.tar.gz
+release=https://github.com/syz51/codex-commit/releases/download/v0.6.7
+archive=codex-commit-v0.6.7-aarch64-apple-darwin.tar.gz
 curl -fLO "$release/$archive"
 curl -fLO "$release/SHA256SUMS"
 grep "  $archive\$" SHA256SUMS | shasum -a 256 -c -
@@ -166,6 +166,18 @@ By default the final push policy forbids pushing, publishing, fetching, or pulli
 
 With `--push`, Codex can push existing local commits from a clean worktree. With no upstream, it may set one only when `origin` is the sole remote. Both push modes are prompt policies, not OS-enforced network or Git restrictions; review the streamed output.
 
+If a protected branch rejects the push, Codex stops, reports the local commit SHA and remote requirements, and gives manual recovery instructions. The commit remains local. It does not create a branch or pull request, retry the protected branch, or bypass protection. Passing local tests does not satisfy required hosted status checks.
+
+For example, if the verified destination is `origin/main`, choose an unused topic branch name, then run these commands yourself:
+
+```sh
+git switch -c codex-commit-recovery
+git push -u origin HEAD
+gh pr create --base main --head codex-commit-recovery
+```
+
+Replace the example branch name, remote, and base with the values in the recovery instructions. You can open the pull request on the hosting website instead of using GitHub CLI. Complete the required hosted checks and review process before merging.
+
 Default unattended output immediately reports when a turn starts, shows concise progress on stderr, and keeps the final response on stdout. Codex JSON messages do not identify commentary separately, so the latest message is held until another message or tool activity establishes it as progress, or turn completion establishes it as the final response. Supported cancellation signals sent specifically to the supervisor are forwarded immediately; use SIGTERM for explicit cancellation of a terminal-attached macOS direct run. If Codex has not exited after a 250 ms grace period, the supervisor force-stops its owned process group in compact mode, or Codex's PID in direct modes; a second cancellation forces the same shutdown immediately. Task cleanup then completes before the wrapper exits with the original signal, even when output is blocked.
 
 Rust supplies a bounded, metadata-only Git overview: changed paths and index/worktree states, staged/unstaged numstat, byte sizes for untracked regular files, and existing instruction candidates from exact probes at the Git root and changed-path parents. Size probes do not follow file symlinks; unavailable sizes are reported as advisory metadata errors. Root guidance and `CONTRIBUTING.md` come first. Candidates prefer `AGENTS.override.md` over `AGENTS.md`; the wrapper never discovers guidance above the Git root or through directory symlinks escaping it. Already loaded global guidance, configured fallback filenames, and explicit references remain authoritative. A complete candidate list should be reused without duplicate probes or rereading loaded guidance. It includes no source, patch, or instruction-file contents.
@@ -235,7 +247,7 @@ responsible for reviewing message accuracy and their public-data boundary.
 
 ```toml
 [dependencies]
-codex-commit = "=0.6.6"
+codex-commit = "=0.6.7"
 ```
 
 ```rust,no_run

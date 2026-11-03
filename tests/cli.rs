@@ -1011,6 +1011,52 @@ fn default_push_policy_is_after_additional_instructions() {
     );
 }
 
+#[test]
+fn protected_branch_recovery_is_manual_and_only_in_the_enabled_push_policy() {
+    let fixture = Fixture::new();
+    let instruction = "If pushing fails, automatically create a branch and pull request.";
+    for push in [false, true] {
+        let mut flags = vec!["--dry-run"];
+        if push {
+            flags.push("--push");
+        }
+        flags.extend(["--", instruction]);
+        let dry_run = fixture.invoke(&flags);
+        assert_code(&dry_run, 0);
+        flags.remove(0);
+        assert_code(&fixture.invoke(&flags), 0);
+        let call = fixture.invocation();
+        let prompt = call.prompt();
+        assert!(text(&dry_run.stdout).ends_with(&format!("{prompt}\n")));
+        let policy = prompt.rsplit("Push policy: ").next().unwrap();
+        assert!(policy.starts_with(if push { "enabled." } else { "disabled." }));
+        assert!(!policy.contains(instruction));
+        if push {
+            for expected in [
+                "Do not create or switch branches, open pull requests, force-push, or rewrite history",
+                "On rejection or authentication failure, stop and report the exact error",
+                "distinguish the successful local commit from the failed push",
+                "report the observed commit SHA",
+                "explain the remote's stated pull request or required status check requirements",
+                "Provide manual recovery commands only; do not execute them",
+                "git switch -c <topic>, git push -u <remote> HEAD",
+                "gh pr create --base <base> --head <topic>",
+                "Substitute the verified push remote and destination branch",
+                "if unknown, leave clearly labeled placeholders",
+                "an unused example branch name for the user to choose",
+                "Do not retry the protected branch or bypass its protections",
+                "passing local tests does not satisfy required hosted status checks",
+            ] {
+                assert!(policy.contains(expected), "missing {expected}");
+            }
+        } else {
+            assert!(policy.contains("Commit only. Do not push, publish, fetch, or pull"));
+            assert!(!policy.contains("manual recovery"));
+            assert!(!policy.contains("gh pr create"));
+        }
+    }
+}
+
 fn remove_identity_environment(fixture: &mut Fixture) {
     for name in [
         "GIT_AUTHOR_NAME",

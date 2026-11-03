@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.7
+
+- Explain protected-branch push failures with the preserved local commit SHA and manual branch/pull request recovery instructions, without automatically changing branches or publishing a pull request.
+
 ## 0.6.6
 
 - Resolve Git author and committer identities concurrently during dirty-tree preflight while preserving warning behavior, error precedence, and child cleanup.
