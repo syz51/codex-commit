@@ -11,7 +11,12 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded pull request runs only; main runs finish and save caches.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Incremental artifacts are large and useless in a restored cache.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
@@ -30,9 +35,19 @@ jobs:
         run: echo "CODEX_COMMIT_TEST_TMPDIR=$RUNNER_TEMP/codex-commit-tests" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The repository allows only GitHub-owned actions, so cache with actions/cache.
+      # Pull requests restore main's cache; only main saves.
+      - name: Restore Cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock') }}
+          restore-keys: cargo-test-${{ runner.os }}-${{ runner.arch }}-
       - name: Run Rust workspace tests
         run: make test
       - name: Verify staged installation
@@ -50,6 +65,16 @@ jobs:
           cmp "$RUNNER_TEMP/expected-completion" "$staging/usr/local/share/zsh/site-functions/_codex-commit"
           test -s "$staging/usr/local/share/bash-completion/completions/codex-commit"
           test -s "$staging/usr/local/share/fish/vendor_completions.d/codex-commit.fish"
+      - name: Save Cargo cache from main
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   lint:
     name: Lint
@@ -61,9 +86,19 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The repository allows only GitHub-owned actions, so cache with actions/cache.
+      # Pull requests restore main's cache; only main saves.
+      - name: Restore Cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-lint-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock') }}
+          restore-keys: cargo-lint-${{ runner.os }}-${{ runner.arch }}-
       - name: Check formatting and Clippy
         run: make check
       - name: Verify minimum supported Rust version
@@ -72,3 +107,13 @@ jobs:
           cargo +1.85.0 check -p codex-commit --locked
       - name: Verify Cargo package
         run: cargo publish -p codex-commit --dry-run --locked
+      - name: Save Cargo cache from main
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
