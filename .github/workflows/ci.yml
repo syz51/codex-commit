@@ -26,12 +26,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Configure build directories
-        run: |
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
-          echo "CODEX_COMMIT_TEST_TMPDIR=$RUNNER_TEMP/codex-commit-tests" >> "$GITHUB_ENV"
+      - name: Configure test directory
+        run: echo "CODEX_COMMIT_TEST_TMPDIR=$RUNNER_TEMP/codex-commit-tests" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run Rust workspace tests
         run: make test
       - name: Verify staged installation
@@ -42,7 +43,7 @@ jobs:
           make install PREFIX=/usr/local DESTDIR="$staging"
           executable="$staging/usr/local/bin/codex-commit"
           test -x "$executable"
-          cmp "$CARGO_TARGET_DIR/release/codex-commit" "$executable"
+          cmp target/release/codex-commit "$executable"
           "$executable" --help
           "$executable" --version
           "$executable" --completions zsh > "$RUNNER_TEMP/expected-completion"
@@ -58,10 +59,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Configure build directory
-        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check formatting and Clippy
         run: make check
       - name: Verify minimum supported Rust version
