@@ -10,8 +10,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel superseded pull request runs only; main runs finish and save caches.
+  # Superseded pull request runs cancel. Other runs group by commit, so a newer
+  # main push never replaces a queued run: every release commit needs its own
+  # CI result before the Tag release workflow tags it.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

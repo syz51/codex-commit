@@ -9,6 +9,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod release;
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
@@ -16,7 +18,9 @@ const USAGE: &str = "Usage:
   cargo xtask package --target TRIPLE --version X.Y.Z --output DIR
   cargo xtask checksums --version X.Y.Z --dir DIST
   cargo xtask homebrew --version X.Y.Z --checksums PATH --output PATH
-  cargo xtask verify-release-tag --tag vX.Y.Z";
+  cargo xtask verify-release-tag --tag vX.Y.Z
+  cargo xtask prepare-release --notes PATH
+  cargo xtask release-tag";
 
 fn main() {
     if let Err(error) = run(std::env::args_os().skip(1)) {
@@ -46,6 +50,8 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
         "checksums" => &["--version", "--dir"][..],
         "homebrew" => &["--version", "--checksums", "--output"][..],
         "verify-release-tag" => &["--tag"][..],
+        "prepare-release" => &["--notes"][..],
+        "release-tag" => &[][..],
         _ => return Err(format!("unknown command: {command}\n{USAGE}").into()),
     };
     let options = options(args, allowed)?;
@@ -84,6 +90,15 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
         }
         "verify-release-tag" => {
             verify_release_tag(workspace(), text_option(&options, "--tag")?)?;
+        }
+        "prepare-release" => {
+            let notes = Path::new(&options["--notes"]);
+            print!("{}", release::prepare(workspace(), notes)?.outputs());
+        }
+        "release-tag" => {
+            let owed = release::release_tag(workspace())?;
+            let (tag, commit) = owed.map(|owed| (owed.tag, owed.commit)).unwrap_or_default();
+            println!("tag={tag}\ncommit={commit}");
         }
         _ => unreachable!(),
     }
@@ -381,8 +396,25 @@ end
     ))
 }
 
+/// A command for `program` that ignores repository overrides inherited from
+/// a calling Git hook, so Git acts on the directory it runs in.
+fn tool(program: &str) -> Command {
+    let mut command = Command::new(program);
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        command.env_remove(variable);
+    }
+    command
+}
+
 fn git(root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).current_dir(root).output()?;
+    let output = tool("git").args(args).current_dir(root).output()?;
     if !output.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -399,7 +431,36 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
 fn verify_release_tag(root: &Path, tag: &str) -> Result<()> {
     let version = tag.strip_prefix('v').ok_or("release tag must be vX.Y.Z")?;
     validate_version(version)?;
-    let metadata = Command::new("cargo")
+    if cargo_package_version(root)? != version {
+        return Err("release tag does not match root Cargo.toml package version".into());
+    }
+    let tagged = git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/tags/{tag}^{{commit}}"),
+        ],
+    )?;
+    if git(root, &["rev-parse", "--verify", "HEAD"])? != tagged {
+        return Err("HEAD does not match the release tag".into());
+    }
+    git(
+        root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &tagged,
+            "refs/remotes/origin/main",
+        ],
+    )?;
+    println!("Verified {tag} at {tagged}, reachable from origin/main.");
+    Ok(())
+}
+
+/// The root package version as Cargo reads it from the manifest.
+fn cargo_package_version(root: &Path) -> Result<String> {
+    let metadata = tool("cargo")
         .args([
             "metadata",
             "--no-deps",
@@ -430,31 +491,10 @@ fn verify_release_tag(root: &Path, tag: &str) -> Result<()> {
                 .is_some_and(|path| Path::new(path) == manifest)
         })
         .ok_or("root package missing from cargo metadata")?;
-    if package["version"].as_str() != Some(version) {
-        return Err("release tag does not match root Cargo.toml package version".into());
-    }
-    let tagged = git(
-        root,
-        &[
-            "rev-parse",
-            "--verify",
-            &format!("refs/tags/{tag}^{{commit}}"),
-        ],
-    )?;
-    if git(root, &["rev-parse", "--verify", "HEAD"])? != tagged {
-        return Err("HEAD does not match the release tag".into());
-    }
-    git(
-        root,
-        &[
-            "merge-base",
-            "--is-ancestor",
-            &tagged,
-            "refs/remotes/origin/main",
-        ],
-    )?;
-    println!("Verified {tag} at {tagged}, reachable from origin/main.");
-    Ok(())
+    package["version"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "root package has no version in cargo metadata".into())
 }
 
 #[cfg(test)]
