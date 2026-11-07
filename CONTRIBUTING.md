@@ -22,4 +22,4 @@ The CLI uses `clap` and `clap_complete` to keep parsing, help, and shell complet
 
 Create a branch and open a pull request against `main`. The protected branch requires passing CI before merging. Describe the user-visible change and how you verified it; include only sanitized output. Do not commit credentials or private repository content.
 
-See [docs/RELEASING.md](docs/RELEASING.md) for Cargo, GitHub Release, and Homebrew publication.
+Add a user-facing entry under `## Unreleased` in `CHANGELOG.md` with each shipped change; a daily workflow releases `main` as the next patch version when shipped files changed. See [docs/RELEASING.md](docs/RELEASING.md) for the daily release, manual versions, and Cargo, GitHub Release, and Homebrew publication.

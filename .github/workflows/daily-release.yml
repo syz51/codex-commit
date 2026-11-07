@@ -1,0 +1,163 @@
+name: Daily release
+
+on:
+  schedule:
+    # 22:03 JST (13:03 UTC). GitHub may start scheduled runs late.
+    - cron: '3 13 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-release
+  cancel-in-progress: false
+
+env:
+  RELEASE_BRANCH: automation/daily-release
+
+jobs:
+  prepare:
+    name: Prepare release from main
+    if: github.repository == 'syz51/codex-commit' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      status: ${{ steps.plan.outputs.status }}
+      version: ${{ steps.plan.outputs.version }}
+      base: ${{ steps.plan.outputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Configure build directory
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/cargo-target" >> "$GITHUB_ENV"
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Prepare the next patch release if shipped files changed
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          cargo xtask prepare-release --notes "$RUNNER_TEMP/release/notes.md" > "$RUNNER_TEMP/plan"
+          cat "$RUNNER_TEMP/plan" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/plan"
+          status="$(sed -n 's/^status=//p' "$RUNNER_TEMP/plan")"
+          version="$(sed -n 's/^version=//p' "$RUNNER_TEMP/plan")"
+          case "$status" in
+            unchanged) echo "No shipped file changed since v$version; nothing to release." >> "$GITHUB_STEP_SUMMARY" ;;
+            pending) echo "::notice::main already carries v$version; it is tagged after CI passes on its release commit."
+                     echo "main already carries v$version, awaiting its tag." >> "$GITHUB_STEP_SUMMARY" ;;
+            prepared) test "$(git diff --name-only | sort | tr '\n' ' ')" = 'CHANGELOG.md Cargo.lock Cargo.toml README.md '
+                      git diff --binary > "$RUNNER_TEMP/release/release.patch"
+                      echo "Prepared v$version." >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "Unexpected release plan: $status" >&2; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.plan.outputs.status == 'prepared'
+        with:
+          name: release-change
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  propose:
+    name: Open release PR with auto-merge
+    needs: prepare
+    if: needs.prepare.outputs.status == 'prepared'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-automation
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-change
+          path: ${{ runner.temp }}/release
+      - name: Create a token scoped to this repository
+        id: release-app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: syz51
+          repositories: codex-commit
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Push the release branch and enable protected auto-merge
+        env:
+          GH_TOKEN: ${{ steps.release-app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_SLUG: ${{ steps.release-app.outputs.app-slug }}
+          BASE: ${{ needs.prepare.outputs.base }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          tag="v$RELEASE_VERSION"
+          test "$(git rev-parse HEAD)" = "$BASE"
+          # Strict branch protection needs the PR to be based on current main.
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$BASE" || {
+            echo 'main moved after the release was prepared; run this workflow again' >&2; exit 1;
+          }
+          git apply --index "$RUNNER_TEMP/release/release.patch"
+          test "$(git diff --cached --name-only | sort | tr '\n' ' ')" = 'CHANGELOG.md Cargo.lock Cargo.toml README.md '
+          bot_id="$(gh api "users/$APP_SLUG%5Bbot%5D" --jq .id)"
+          git config user.name "$APP_SLUG[bot]"
+          git config user.email "$bot_id+$APP_SLUG[bot]@users.noreply.github.com"
+          git commit -m "Release $tag"
+          head="$(git rev-parse HEAD)"
+          gh auth setup-git --hostname github.com
+          # The branch belongs to this workflow: replace yesterday's unmerged release.
+          previous="$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)"
+          git push --force-with-lease="refs/heads/$RELEASE_BRANCH:$previous" origin "HEAD:refs/heads/$RELEASE_BRANCH"
+          {
+            printf 'Daily release of `main` at %s.\n\n## Changes\n\n' "$BASE"
+            cat "$RUNNER_TEMP/release/notes.md"
+            printf '\nThis PR merges itself after the required checks pass. When CI then passes on the release commit in `main`, the Tag release workflow pushes `%s`, which publishes to crates.io, GitHub Releases, and Homebrew. Close this PR to skip a release; the next daily run recreates it while shipped changes remain.\n' "$tag"
+          } > "$RUNNER_TEMP/pr-body.md"
+          gh pr list --head "$RELEASE_BRANCH" --base main --state open --json number > "$RUNNER_TEMP/pull-requests.json"
+          case "$(jq length "$RUNNER_TEMP/pull-requests.json")" in
+            0) pr="$(gh pr create --head "$RELEASE_BRANCH" --base main --title "Release $tag" --body-file "$RUNNER_TEMP/pr-body.md")" ;;
+            1) pr="$(jq -r '.[0].number' "$RUNNER_TEMP/pull-requests.json")"
+               gh pr edit "$pr" --title "Release $tag" --body-file "$RUNNER_TEMP/pr-body.md"
+               # Re-arm auto-merge for the new head commit.
+               if test "$(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true; then
+                 gh pr merge "$pr" --disable-auto
+               fi ;;
+            *) echo 'Multiple open release PRs exist' >&2; exit 1 ;;
+          esac
+          # App-authenticated pushes, PRs, and merges run the normal required checks and main CI.
+          gh pr merge "$pr" --auto --squash --match-head-commit "$head"
+          echo "Release PR for $tag: $pr" >> "$GITHUB_STEP_SUMMARY"
+
+  close-stale:
+    name: Close stale release PR
+    needs: prepare
+    if: needs.prepare.outputs.status == 'unchanged' || needs.prepare.outputs.status == 'pending'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Close an open release PR that main no longer needs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr list --head "$RELEASE_BRANCH" --base main --state open --json number --jq '.[].number' |
+            while read -r pr; do
+              gh pr close "$pr" --delete-branch --comment 'Closed by the daily release: main has no unreleased shipped changes, or already carries a newer version.'
+            done
