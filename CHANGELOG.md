@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.8
+
 - Update `toml` to 1.1.8, enabling its `std`, `serde` and `parse` features explicitly, and `signal-hook` to 0.4.5.
 
 ## 0.6.7
