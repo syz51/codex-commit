@@ -22,7 +22,7 @@ tempfile = "3.27.0"
 clap = { version = "4.6.7", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 clap_complete = "4.6.11"
 serde = { version = "1.0.228", features = ["derive"] }
-toml = { version = "1.1.8", default-features = false, features = ["parse"] }
+toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 
 nix = { version = "0.31.3", features = ["fs", "process", "signal"] }
 serde_json = "1.0.154"

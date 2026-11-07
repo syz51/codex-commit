@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Update `toml` to 1.1.8, enabling its `std`, `serde` and `parse` features explicitly, and `signal-hook` to 0.4.5.
+
 ## 0.6.7
 
 - Explain protected-branch push failures with the preserved local commit SHA and manual branch/pull request recovery instructions, without automatically changing branches or publishing a pull request.
