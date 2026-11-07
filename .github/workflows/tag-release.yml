@@ -1,7 +1,9 @@
 name: Tag release
 
-# Tags a merged release commit once main CI has passed on it; the tag push
-# starts the Release workflow. Commits that keep the version are ignored.
+# Tags the release commit of the version main carries once CI has passed on
+# that exact commit; the tag push starts the Release workflow. Any later
+# successful main CI run, a manual run, or the daily release recovers a
+# release commit whose own tagging run was lost.
 on:
   # Only successful push runs on this repository's protected main reach the
   # jobs below, so no pull request code runs here, and the job holding the
@@ -10,41 +12,48 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# One group per main commit: a later run must never replace a queued one.
 concurrency:
-  group: tag-release
+  group: tag-release-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
   plan:
-    name: Check for an untagged release commit
+    name: Find the release commit owing a tag
     if: >-
-      github.repository == 'syz51/codex-commit' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.repository == 'syz51/codex-commit' && (
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
     outputs:
       tag: ${{ steps.plan.outputs.tag }}
-      sha: ${{ steps.plan.outputs.sha }}
+      commit: ${{ steps.plan.outputs.commit }}
+      ready: ${{ steps.checks.outputs.ready }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal
-      - name: Identify the release tag
+      - name: Identify the owed tag and its release commit
         id: plan
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -53,12 +62,39 @@ jobs:
           cargo xtask release-tag > "$RUNNER_TEMP/plan"
           cat "$RUNNER_TEMP/plan"
           cat "$RUNNER_TEMP/plan" >> "$GITHUB_OUTPUT"
-          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      - name: Require successful CI on the release commit
+        id: checks
+        if: steps.plan.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+          RELEASE_SHA: ${{ steps.plan.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh api --paginate --slurp "repos/$GH_REPO/commits/$RELEASE_SHA/check-runs?per_page=100" > "$RUNNER_TEMP/checks.json"
+          state="$(jq -r --arg sha "$RELEASE_SHA" \
+            --argjson required '["Lint","Test (ubuntu-latest)","Test (macos-latest)","Test (macos-15-intel)"]' '
+            [.[].check_runs[] | select(.app.id == 15368 and .head_sha == $sha)] as $runs
+            | [$required[] as $name | [$runs[] | select(.name == $name)] | sort_by(.started_at, .id) | last]
+            | if all(.[]; . != null and .status == "completed" and .conclusion == "success") then "success"
+              elif any(.[]; . != null and .status == "completed" and .conclusion != "success") then "failure"
+              else "waiting" end
+          ' "$RUNNER_TEMP/checks.json")"
+          case "$state" in
+            success) echo 'ready=true' >> "$GITHUB_OUTPUT" ;;
+            waiting) echo "::notice::CI is still running on release commit $RELEASE_SHA; its completion tags $RELEASE_TAG."
+                     echo 'ready=false' >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::CI failed on release commit $RELEASE_SHA, so $RELEASE_TAG is not tagged. Rerun the failed CI jobs on that commit, or see docs/RELEASING.md."
+               exit 1 ;;
+          esac
 
   tag:
     name: Push the release tag
     needs: plan
-    if: needs.plan.outputs.tag != ''
+    if: needs.plan.outputs.ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release-automation
@@ -67,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.plan.outputs.sha }}
+          ref: ${{ needs.plan.outputs.commit }}
           persist-credentials: false
       - name: Create a token scoped to this repository
         id: release-app
@@ -83,7 +119,7 @@ jobs:
           GH_TOKEN: ${{ steps.release-app.outputs.token }}
           APP_SLUG: ${{ steps.release-app.outputs.app-slug }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
+          RELEASE_SHA: ${{ needs.plan.outputs.commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -95,7 +131,15 @@ jobs:
           git config user.email "$bot_id+$APP_SLUG[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_TAG" -m "$RELEASE_TAG" "$RELEASE_SHA"
           gh auth setup-git --hostname github.com
-          # An App-authenticated tag push starts the Release workflow; a
-          # non-forced push refuses to replace an existing tag.
-          git push origin "refs/tags/$RELEASE_TAG"
+          tagged() {
+            git ls-remote --tags origin |
+              awk -v ref="refs/tags/$RELEASE_TAG^{}" '$2 == ref { print $1 }'
+          }
+          # An App-authenticated tag push starts the Release workflow. A
+          # non-forced push never replaces a tag; a concurrent run for a
+          # later commit may have pushed the same tag first.
+          if ! git push origin "refs/tags/$RELEASE_TAG"; then
+            test "$(tagged)" = "$RELEASE_SHA"
+            echo "$RELEASE_TAG was already pushed at $RELEASE_SHA."
+          fi
           echo "Tagged $RELEASE_TAG at $RELEASE_SHA; the Release workflow publishes it." >> "$GITHUB_STEP_SUMMARY"

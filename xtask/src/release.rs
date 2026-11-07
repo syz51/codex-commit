@@ -1,14 +1,15 @@
 //! Daily release planning: decide whether `main` ships anything new since the
-//! latest stable tag, prepare the next patch version, and recognize merged
-//! release commits that still need their tag.
+//! latest stable tag, prepare the next patch version, and find the release
+//! commit that still owes its tag.
 
-use crate::{Result, cargo_package_version, git, validate_version, write_atomic};
-use std::collections::BTreeSet;
+use crate::{Result, cargo_package_version, git, tool, validate_version, write_atomic};
+use flate2::read::GzDecoder;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::ops::Range;
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Version([u64; 3]);
@@ -39,10 +40,10 @@ impl fmt::Display for Version {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Plan {
-    /// No shipped file changed since the latest tag.
+    /// The published crate would be identical to the latest tag's.
     Unchanged { version: Version },
     /// `main` already carries a version newer than the latest tag; its
-    /// release commit is waiting for CI and tagging.
+    /// release commit still owes its tag.
     Pending { tagged: Version, version: Version },
     /// The working tree now holds the next patch release.
     Prepared { previous: Version, version: Version },
@@ -63,9 +64,11 @@ impl Plan {
     }
 }
 
-/// Prepare the next patch release in the clean working tree at `root` when a
-/// shipped file changed since the latest stable tag reachable from `HEAD`.
-/// The release notes are written to `notes` only for a prepared release.
+/// Prepare the next patch release in the clean working tree at `root` when
+/// the crate Cargo would publish differs from the one at the latest stable
+/// tag reachable from `HEAD`. The release archives ship the same binary
+/// sources plus README.md and LICENSE, which the crate also contains. The
+/// release notes are written to `notes` only for a prepared release.
 pub(crate) fn prepare(root: &Path, notes: &Path) -> Result<Plan> {
     if !git(root, &["status", "--porcelain"])?.is_empty() {
         return Err("prepare-release needs a clean working tree".into());
@@ -83,12 +86,11 @@ pub(crate) fn prepare(root: &Path, notes: &Path) -> Result<Plan> {
         });
     }
     let tag = format!("v{tagged}");
-    let mut shipped = package_files(root)?;
-    shipped.extend(package_files_at(root, &tag)?);
-    let changed: Vec<String> = changed_paths(root, &tag)?
-        .intersection(&shipped)
-        .cloned()
-        .collect();
+    if git(root, &["diff", "--quiet", &tag, "HEAD"]).is_ok() {
+        return Ok(Plan::Unchanged { version: current });
+    }
+    let changed =
+        changed_package_files(&package_contents(root)?, &package_contents_at(root, &tag)?);
     if changed.is_empty() {
         return Ok(Plan::Unchanged { version: current });
     }
@@ -117,44 +119,74 @@ pub(crate) fn prepare(root: &Path, notes: &Path) -> Result<Plan> {
     })
 }
 
-/// The tag for `HEAD` when it is a release commit: its first parent carries
-/// an older version, and no tag for the new version exists yet.
-pub(crate) fn release_tag(root: &Path) -> Result<Option<String>> {
+/// A stable tag still owed by the version `HEAD` carries, and the release
+/// commit that introduced that version.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct OwedTag {
+    pub(crate) tag: String,
+    pub(crate) commit: String,
+}
+
+/// The tag owed by `HEAD`'s version, if it has not been released yet. The
+/// tag belongs on the oldest commit of `HEAD`'s first-parent chain that
+/// carries the version without interruption, so a later commit can recover a
+/// release commit whose own tagging run was lost.
+pub(crate) fn release_tag(root: &Path) -> Result<Option<OwedTag>> {
     let manifest = fs::read_to_string(root.join("Cargo.toml"))?;
     let current = checked_package_version(root, &manifest)?;
-    let previous = manifest_version(&git(root, &["show", "HEAD^1:Cargo.toml"])?)?.1;
-    if current == previous {
-        return Ok(None);
-    }
-    if current < previous {
-        return Err(format!("version decreased from {previous} to {current}").into());
-    }
     let tag = format!("v{current}");
     if !git(root, &["tag", "--list", &tag])?.is_empty() {
-        let tagged = git(root, &["rev-parse", &format!("refs/tags/{tag}^{{commit}}")])?;
-        if tagged == git(root, &["rev-parse", "HEAD"])? {
-            return Ok(None);
-        }
-        return Err(format!("{tag} already exists at another commit").into());
+        let tagged = format!("refs/tags/{tag}^{{commit}}");
+        git(root, &["merge-base", "--is-ancestor", &tagged, "HEAD"])
+            .map_err(|_| format!("{tag} exists but is not an ancestor of HEAD"))?;
+        return Ok(None);
     }
     let latest = latest_tag(root)?;
     if current <= latest {
         return Err(format!("{tag} is not newer than the latest tag v{latest}").into());
     }
-    let changelog = fs::read_to_string(root.join("CHANGELOG.md"))?;
-    if !changelog
-        .lines()
-        .any(|line| line == format!("## {current}"))
-    {
-        return Err(format!("CHANGELOG.md has no ## {current} section").into());
+    let mut commit = None;
+    for candidate in git(root, &["rev-list", "--first-parent", "HEAD"])?.lines() {
+        let manifest = git(root, &["show", &format!("{candidate}:Cargo.toml")])?;
+        if manifest_version(&manifest)?.1 != current {
+            break;
+        }
+        commit = Some(candidate.to_owned());
     }
-    Ok(Some(tag))
+    let commit = commit.ok_or("HEAD does not carry its working tree version")?;
+    if !has_heading(
+        &git(root, &["show", &format!("{commit}:CHANGELOG.md")])?,
+        current,
+    ) {
+        return Err(format!("CHANGELOG.md has no ## {current} section at {commit}").into());
+    }
+    Ok(Some(OwedTag { tag, commit }))
 }
 
+/// The literal `[package]` version, checked against Cargo, with
+/// `Cargo.lock` checked to resolve unchanged.
 fn checked_package_version(root: &Path, manifest: &str) -> Result<Version> {
     let version = manifest_version(manifest)?.1;
     if Version::parse(&cargo_package_version(root)?)? != version {
         return Err("Cargo.toml [package] version disagrees with cargo metadata".into());
+    }
+    let resolved = tool("cargo")
+        .args([
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--manifest-path",
+        ])
+        .arg(root.join("Cargo.toml"))
+        .current_dir(root)
+        .output()?;
+    if !resolved.status.success() {
+        return Err(format!(
+            "Cargo.lock does not match the manifests: {}",
+            String::from_utf8_lossy(&resolved.stderr).trim()
+        )
+        .into());
     }
     Ok(version)
 }
@@ -167,41 +199,58 @@ fn latest_tag(root: &Path) -> Result<Version> {
         .ok_or_else(|| "no stable vX.Y.Z tag is reachable from HEAD".into())
 }
 
-fn changed_paths(root: &Path, tag: &str) -> Result<BTreeSet<String>> {
-    Ok(git(
-        root,
-        &["diff", "--name-only", "--no-renames", "-z", tag, "HEAD"],
-    )?
-    .split('\0')
-    .filter(|path| !path.is_empty())
-    .map(str::to_owned)
-    .collect())
-}
-
-/// Files Cargo would publish from the package at `directory`; the release
-/// archives ship a subset of these (README.md and LICENSE).
-fn package_files(directory: &Path) -> Result<BTreeSet<String>> {
-    let output = Command::new("cargo")
-        .args(["package", "--list", "--locked", "--manifest-path"])
+/// The files of the crate Cargo would publish from the package at
+/// `directory`, by path inside the crate. The VCS stamp and the original
+/// manifest are left out: Cargo builds from the normalized `Cargo.toml` and
+/// the package's own pruned `Cargo.lock`, so workspace-only changes, such as
+/// `xtask` dependencies, do not count.
+fn package_contents(directory: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+    let target = tempfile::tempdir()?;
+    let output = tool("cargo")
+        .args(["package", "--no-verify", "--locked", "--manifest-path"])
         .arg(directory.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(target.path())
         .current_dir(directory)
         .output()?;
     if !output.status.success() {
         return Err(format!(
-            "cargo package --list failed: {}",
+            "cargo package failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )
         .into());
     }
-    Ok(String::from_utf8(output.stdout)?
-        .lines()
-        .map(str::to_owned)
-        .collect())
+    let crates: Vec<_> = fs::read_dir(target.path().join("package"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "crate")
+        })
+        .collect();
+    let [package] = crates.as_slice() else {
+        return Err("cargo package must produce exactly one crate".into());
+    };
+    let mut contents = BTreeMap::new();
+    let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(package)?));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path: std::path::PathBuf = entry.path()?.components().skip(1).collect();
+        let path = path.to_str().ok_or("crate path must be UTF-8")?.to_owned();
+        if path == ".cargo_vcs_info.json" || path == "Cargo.toml.orig" {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        contents.insert(path, bytes);
+    }
+    Ok(contents)
 }
 
-/// Package files at `tag`, so files deleted or excluded since then count too.
-fn package_files_at(root: &Path, tag: &str) -> Result<BTreeSet<String>> {
-    let archive = Command::new("git")
+/// The published crate at `tag`, from an exported copy of its tree.
+fn package_contents_at(root: &Path, tag: &str) -> Result<BTreeMap<String, Vec<u8>>> {
+    let archive = tool("git")
         .args(["archive", "--format=tar", tag])
         .current_dir(root)
         .output()?;
@@ -214,12 +263,28 @@ fn package_files_at(root: &Path, tag: &str) -> Result<BTreeSet<String>> {
     }
     let directory = tempfile::tempdir()?;
     tar::Archive::new(archive.stdout.as_slice()).unpack(directory.path())?;
-    package_files(directory.path())
+    package_contents(directory.path())
+}
+
+/// Crate paths added, removed, or changed; each is also its repository path.
+fn changed_package_files(
+    current: &BTreeMap<String, Vec<u8>>,
+    tagged: &BTreeMap<String, Vec<u8>>,
+) -> Vec<String> {
+    current
+        .keys()
+        .chain(tagged.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| current.get(*path) != tagged.get(*path))
+        .cloned()
+        .collect()
 }
 
 fn commit_entries(root: &Path, tag: &str, paths: &[String]) -> Result<String> {
     let range = format!("{tag}..HEAD");
     let mut args = vec![
+        "--literal-pathspecs",
         "log",
         "--reverse",
         "--no-merges",
@@ -233,23 +298,35 @@ fn commit_entries(root: &Path, tag: &str, paths: &[String]) -> Result<String> {
         .map(|subject| format!("- {subject}"))
         .collect();
     if entries.is_empty() {
-        return Err("shipped files changed but no commit since the tag touches them".into());
+        return Err("the crate changed but no commit since the tag touches its files".into());
     }
     Ok(entries.join("\n"))
+}
+
+fn has_heading(changelog: &str, version: Version) -> bool {
+    let heading = format!("## {version}");
+    changelog.lines().any(|line| line == heading)
 }
 
 /// Split CHANGELOG.md around the Unreleased section:
 /// (through the Unreleased heading, its entries, from the next heading on).
 fn changelog_parts(changelog: &str) -> Result<(&str, &str, &str)> {
-    const HEADING: &str = "\n## Unreleased\n";
-    let start = changelog
-        .find(HEADING)
-        .ok_or("CHANGELOG.md has no ## Unreleased section")?;
-    let body = start + HEADING.len();
-    let rest = changelog[body..]
+    const HEADING: &str = "## Unreleased\n";
+    let start = if changelog.starts_with(HEADING) {
+        0
+    } else {
+        changelog
+            .find(&format!("\n{HEADING}"))
+            .ok_or("CHANGELOG.md has no ## Unreleased section")?
+            + 1
+    };
+    // Search from the heading's own newline so an adjacent heading is found.
+    let newline = start + HEADING.len() - 1;
+    let rest = changelog[newline..]
         .find("\n## ")
-        .map(|offset| body + offset + 1)
+        .map(|offset| newline + offset + 1)
         .ok_or("CHANGELOG.md has no released version after Unreleased")?;
+    let body = newline + 1;
     Ok((
         &changelog[..body],
         &changelog[body..rest],
@@ -271,7 +348,7 @@ fn release_changelog(
     if !rest.starts_with(&format!("## {previous}\n")) {
         return Err(format!("CHANGELOG.md does not continue with ## {previous}").into());
     }
-    if changelog.lines().any(|line| line == format!("## {next}")) {
+    if has_heading(changelog, next) {
         return Err(format!("CHANGELOG.md already has ## {next}").into());
     }
     Ok(format!("{head}\n## {next}\n\n{entries}\n\n{rest}"))
@@ -426,6 +503,13 @@ mod tests {
         assert!(release_changelog(changelog, version("0.6.6"), version("0.6.8"), "-").is_err());
         assert!(release_changelog(changelog, version("0.6.6"), version("0.6.7"), "-").is_err());
         assert!(unreleased_entries("# Changelog\n\n## 0.6.7\n").is_err());
+        // An adjacent version heading, and Unreleased on the first line.
+        let adjacent = "## Unreleased\n## 0.6.7\n\n- Old thing.\n";
+        assert_eq!(unreleased_entries(adjacent).unwrap(), "");
+        assert_eq!(
+            release_changelog(adjacent, version("0.6.7"), version("0.6.8"), "- New.").unwrap(),
+            "## Unreleased\n\n## 0.6.8\n\n- New.\n\n## 0.6.7\n\n- Old thing.\n"
+        );
     }
 
     struct Fixture {
@@ -473,7 +557,7 @@ mod tests {
         }
 
         fn git(&self, args: &[&str]) -> String {
-            let output = Command::new("git")
+            let output = tool("git")
                 .args(args)
                 .current_dir(self.root())
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -597,17 +681,61 @@ mod tests {
     }
 
     #[test]
-    fn merged_release_commit_is_pending_until_tagged() {
+    fn workspace_only_changes_do_not_release() {
+        let fixture = Fixture::new();
+        // A workspace member changes the root manifest and Cargo.lock, but
+        // not the normalized manifest or the pruned lock Cargo publishes.
+        fixture.write(
+            "Cargo.toml",
+            &format!("{MANIFEST}\n[workspace]\nmembers = [\"helper\"]\n"),
+        );
+        fixture.write(
+            "helper/Cargo.toml",
+            "[package]\nname = \"helper\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        );
+        fixture.write("helper/src/lib.rs", "\n");
+        fixture.write(
+            "Cargo.lock",
+            &format!("{LOCK}\n[[package]]\nname = \"helper\"\nversion = \"0.1.0\"\n"),
+        );
+        fixture.commit("Add a workspace helper");
+        assert_eq!(
+            fixture.prepare().unwrap(),
+            Plan::Unchanged {
+                version: version("0.2.0")
+            }
+        );
+        fixture.write(
+            "helper/Cargo.toml",
+            "[package]\nname = \"helper\"\nversion = \"0.1.1\"\nedition = \"2024\"\n",
+        );
+        fixture.write(
+            "Cargo.lock",
+            &format!("{LOCK}\n[[package]]\nname = \"helper\"\nversion = \"0.1.1\"\n"),
+        );
+        fixture.commit("Bump the workspace helper");
+        assert_eq!(
+            fixture.prepare().unwrap(),
+            Plan::Unchanged {
+                version: version("0.2.0")
+            }
+        );
+    }
+
+    #[test]
+    fn release_commit_owes_its_tag_until_tagged() {
         let fixture = Fixture::new();
         fixture.write("src/main.rs", "fn main() { println!(); }\n");
         fixture.commit("Print a blank line");
         assert_eq!(release_tag(fixture.root()).unwrap(), None);
         fixture.prepare().unwrap();
         fixture.commit("Release v0.2.1");
-        assert_eq!(
-            release_tag(fixture.root()).unwrap(),
-            Some("v0.2.1".to_owned())
-        );
+        let release = fixture.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let owed = Some(OwedTag {
+            tag: "v0.2.1".to_owned(),
+            commit: release.clone(),
+        });
+        assert_eq!(release_tag(fixture.root()).unwrap(), owed);
         assert_eq!(
             fixture.prepare().unwrap(),
             Plan::Pending {
@@ -615,17 +743,14 @@ mod tests {
                 version: version("0.2.1")
             }
         );
-        fixture.git(&["tag", "-a", "v0.2.1", "-m", "v0.2.1"]);
-        assert_eq!(release_tag(fixture.root()).unwrap(), None);
-        assert_eq!(
-            fixture.prepare().unwrap(),
-            Plan::Unchanged {
-                version: version("0.2.1")
-            }
-        );
+        // A later commit still points at the release commit, so a lost
+        // tagging run is recovered rather than skipped.
         fixture.write("README.md", "Install v0.2.1 today.\n");
         fixture.commit("Reword install");
+        assert_eq!(release_tag(fixture.root()).unwrap(), owed);
+        fixture.git(&["tag", "-a", "v0.2.1", "-m", "v0.2.1", &release]);
         assert_eq!(release_tag(fixture.root()).unwrap(), None);
+        assert!(matches!(fixture.prepare().unwrap(), Plan::Prepared { .. }));
     }
 
     #[test]

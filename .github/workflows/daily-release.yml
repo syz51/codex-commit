@@ -49,9 +49,9 @@ jobs:
           version="$(sed -n 's/^version=//p' "$RUNNER_TEMP/plan")"
           case "$status" in
             unchanged) echo "No shipped file changed since v$version; nothing to release." >> "$GITHUB_STEP_SUMMARY" ;;
-            pending) echo "::notice::main already carries v$version; it is tagged after CI passes on its release commit."
+            pending) echo "::notice::main already carries v$version; asking Tag release to tag its release commit."
                      echo "main already carries v$version, awaiting its tag." >> "$GITHUB_STEP_SUMMARY" ;;
-            prepared) test "$(git diff --name-only | sort | tr '\n' ' ')" = 'CHANGELOG.md Cargo.lock Cargo.toml README.md '
+            prepared) test "$(git diff --name-only | LC_ALL=C sort | tr '\n' ' ')" = 'CHANGELOG.md Cargo.lock Cargo.toml README.md '
                       git diff --binary > "$RUNNER_TEMP/release/release.patch"
                       echo "Prepared v$version." >> "$GITHUB_STEP_SUMMARY" ;;
             *) echo "Unexpected release plan: $status" >&2; exit 1 ;;
@@ -110,7 +110,7 @@ jobs:
             echo 'main moved after the release was prepared; run this workflow again' >&2; exit 1;
           }
           git apply --index "$RUNNER_TEMP/release/release.patch"
-          test "$(git diff --cached --name-only | sort | tr '\n' ' ')" = 'CHANGELOG.md Cargo.lock Cargo.toml README.md '
+          test "$(git diff --cached --name-only | LC_ALL=C sort | tr '\n' ' ')" = 'CHANGELOG.md Cargo.lock Cargo.toml README.md '
           bot_id="$(gh api "users/$APP_SLUG%5Bbot%5D" --jq .id)"
           git config user.name "$APP_SLUG[bot]"
           git config user.email "$bot_id+$APP_SLUG[bot]@users.noreply.github.com"
@@ -161,3 +161,20 @@ jobs:
             while read -r pr; do
               gh pr close "$pr" --delete-branch --comment 'Closed by the daily release: main has no unreleased shipped changes, or already carries a newer version.'
             done
+
+  recover-tag:
+    name: Recover the pending release tag
+    needs: prepare
+    if: needs.prepare.outputs.status == 'pending'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      # Tag release tags the release commit when its CI passed, waits while
+      # CI runs, and fails visibly when that CI failed.
+      - name: Run Tag release on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run tag-release.yml --ref main

@@ -92,14 +92,13 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
             verify_release_tag(workspace(), text_option(&options, "--tag")?)?;
         }
         "prepare-release" => {
-            let notes = std::env::current_dir()?.join(&options["--notes"]);
-            print!("{}", release::prepare(workspace(), &notes)?.outputs());
+            let notes = Path::new(&options["--notes"]);
+            print!("{}", release::prepare(workspace(), notes)?.outputs());
         }
         "release-tag" => {
-            println!(
-                "tag={}",
-                release::release_tag(workspace())?.unwrap_or_default()
-            );
+            let owed = release::release_tag(workspace())?;
+            let (tag, commit) = owed.map(|owed| (owed.tag, owed.commit)).unwrap_or_default();
+            println!("tag={tag}\ncommit={commit}");
         }
         _ => unreachable!(),
     }
@@ -397,8 +396,25 @@ end
     ))
 }
 
+/// A command for `program` that ignores repository overrides inherited from
+/// a calling Git hook, so Git acts on the directory it runs in.
+fn tool(program: &str) -> Command {
+    let mut command = Command::new(program);
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        command.env_remove(variable);
+    }
+    command
+}
+
 fn git(root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).current_dir(root).output()?;
+    let output = tool("git").args(args).current_dir(root).output()?;
     if !output.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -442,10 +458,9 @@ fn verify_release_tag(root: &Path, tag: &str) -> Result<()> {
     Ok(())
 }
 
-/// The root package version as Cargo resolves it, which also proves that
-/// `Cargo.lock` agrees with the manifest.
+/// The root package version as Cargo reads it from the manifest.
 fn cargo_package_version(root: &Path) -> Result<String> {
-    let metadata = Command::new("cargo")
+    let metadata = tool("cargo")
         .args([
             "metadata",
             "--no-deps",

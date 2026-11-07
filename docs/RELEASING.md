@@ -12,9 +12,11 @@ gh workflow run daily-release.yml --repo syz51/codex-commit --ref main
 
 It runs `cargo xtask prepare-release` on `main`, which compares `main` with the latest stable tag reachable from it:
 
-- **Nothing shipped changed:** no release. Shipped files are those `cargo package --list` reports at `main` or at the tag: `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, `README.md`, and `LICENSE`. Changes to CI, `docs/`, `xtask/`, or `CHANGELOG.md` alone wait for the next release.
-- **Shipped files changed:** the next patch version is prepared. `Cargo.toml`, `Cargo.lock`, and the versioned examples in `README.md` move to it, and the `## Unreleased` entries in `CHANGELOG.md` move under its heading. When Unreleased is empty, the entries are the subjects of the commits that changed shipped files, which are the squash-merged PR titles.
-- **`main` already carries a newer, untagged version:** nothing is prepared; that release commit is tagged once its CI passes.
+- **Nothing shipped changed:** no release. What ships is the crate `cargo package` builds: the files `include` lists in `Cargo.toml` (`src/**`, `tests/**/*.rs`, `README.md`, `LICENSE`), the normalized manifest, and the package's own pruned `Cargo.lock`; the release archives contain the binary built from it plus `README.md` and `LICENSE`. Changes to CI, `docs/`, `xtask/` and its dependencies, the `[workspace]` section, or `CHANGELOG.md` alone wait for the next release.
+- **The crate changed:** the next patch version is prepared. `Cargo.toml`, `Cargo.lock`, and every mention of the current version in `README.md` move to it, and the `## Unreleased` entries in `CHANGELOG.md` move under its heading. When Unreleased is empty, the entries are the subjects of the commits that changed shipped files, which are the squash-merged PR titles.
+- **`main` already carries a newer, untagged version:** nothing is prepared, and the run starts `Tag release` to tag that version's release commit.
+
+`README.md` mentions of the exact current version are treated as install examples and all move to the new version; refer to older versions with their own numbers.
 
 A prepared release is pushed to the `automation/daily-release` branch as `Release vX.Y.Z` and proposed as a pull request with squash auto-merge. The release GitHub App authenticates the push, so the four required checks run on it, and the PR merges only after they pass. Each daily run replaces an unmerged release PR with one prepared from current `main`, and closes an open release PR when `main` no longer needs it. To skip a day, close the PR; the next daily run proposes the release again while unreleased shipped changes remain.
 
@@ -22,9 +24,9 @@ Write user-facing `## Unreleased` entries in `CHANGELOG.md` with each change, as
 
 ## Tagging
 
-The `Tag release` workflow runs whenever CI succeeds on a `main` push. When that commit changes the root package version from its first parent, `cargo xtask release-tag` checks that the new version is newer than every reachable stable tag, has no tag yet, and has a `## X.Y.Z` section in `CHANGELOG.md`. The release App then pushes an annotated `vX.Y.Z` tag at exactly that commit, which starts the `Release` workflow. Commits that keep the version are ignored. CI runs on `main` are never replaced by later pushes, so every release commit gets its own result.
+The `Tag release` workflow runs whenever CI succeeds on a `main` push, when the daily run finds a pending version, and on manual dispatch against `main`. If the version `main` carries has no tag, `cargo xtask release-tag` finds its release commit, the oldest commit on `main`'s first-parent chain that carries the version without interruption, and checks that the version is newer than every reachable stable tag and has a `## X.Y.Z` section in `CHANGELOG.md` at that commit. When all four required checks passed on the release commit, the release App pushes an annotated `vX.Y.Z` tag at exactly that commit, which starts the `Release` workflow. While its CI runs, nothing happens; its completion tags it. CI and tagging runs on `main` are grouped by commit, so later pushes never replace them, and any later run recovers a lost one.
 
-If CI fails on a release commit, fix the cause and rerun the failed CI jobs on that commit; success tags it. Until then, daily runs report the version as pending and prepare nothing new.
+If CI failed on the release commit, every `Tag release` run fails visibly, including the one each daily run starts, and nothing new is prepared. For a flaky failure, rerun the failed CI jobs on that commit; success tags it. If the commit itself is broken, merge the fix, adding its entry to the `## X.Y.Z` section, and after CI passes on the fix commit tag it by hand as below; the `Release` workflow accepts any checked `main` commit that carries the version.
 
 ## Prepare a version manually
 
