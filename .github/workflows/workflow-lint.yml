@@ -65,4 +65,4 @@ jobs:
           # Online audits check that each pinned SHA matches its tag and
           # is not a known-vulnerable or impostor commit.
           GH_TOKEN: ${{ github.token }}
-        run: zizmor --format github .github/workflows
+        run: zizmor --format github .github
