@@ -318,6 +318,7 @@ jobs:
     concurrency:
       group: publish-stable-release
       queue: max
+      bogus-probe-key: true
       cancel-in-progress: false
     permissions:
       contents: write
