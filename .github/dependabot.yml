@@ -1,16 +1,29 @@
 version: 2
+# CONTRIBUTING.md describes how Dependabot pull requests are reviewed and merged.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before proposing a new release, so a compromised or broken
+    # release is more likely to be caught upstream first. Security updates
+    # ignore the cooldown.
+    cooldown:
+      default-days: 7
     groups:
+      # Minor and patch updates share one pull request; major updates get
+      # their own.
       github-actions:
         patterns: ['*']
+        update-types: [minor, patch]
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
+      # For Cargo, Dependabot counts a 0.x minor bump (0.3 to 0.4) as major.
       rust-dependencies:
         patterns: ['*']
+        update-types: [minor, patch]
