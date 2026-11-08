@@ -29,6 +29,7 @@ jobs:
           persist-credentials: false
       # The action allowlist holds no lint actions, and Dependabot does not
       # track these downloads: update each version together with its SHA-256.
+      # The weekly Lint tool updates workflow fails when a newer release exists.
       - name: Install actionlint, ShellCheck, and zizmor
         id: install
         shell: bash
@@ -48,7 +49,7 @@ jobs:
           fetch https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz \
             zizmor.tar.gz bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
           tar -xzf actionlint.tar.gz actionlint
-          tar -xJf shellcheck.tar.xz --strip-components=1 shellcheck-v0.11.0/shellcheck
+          tar -xJf shellcheck.tar.xz --strip-components=1 --wildcards '*/shellcheck'
           tar -xzf zizmor.tar.gz zizmor
           echo "$bin" >> "$GITHUB_PATH"
       - name: Run actionlint with ShellCheck

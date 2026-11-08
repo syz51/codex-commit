@@ -1,0 +1,73 @@
+name: Lint tool updates
+
+# Dependabot does not see the tool downloads in workflow-lint.yml, so this
+# weekly run fails when a pinned tool has had a newer release for 7 days
+# (Dependabot's cooldown). See CONTRIBUTING.md for how to update a pin. Pull
+# requests that change either file run it too, so a parser break shows there.
+on:
+  schedule:
+    # Mondays 10:17 JST (01:17 UTC).
+    - cron: '17 1 * * 1'
+  pull_request:
+    paths:
+      - .github/workflows/workflow-lint.yml
+      - .github/workflows/lint-tool-updates.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check for newer lint tool releases
+    if: github.repository == 'syz51/codex-commit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compare each pinned tool with its latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -oE 'https://github\.com/[^/]+/[^/]+/releases/download/[^/]+/' .github/workflows/workflow-lint.yml |
+            sed -E 's#^https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/$#\1 \2#' |
+            sort -u > "$RUNNER_TEMP/pins"
+          if test "$(wc -l < "$RUNNER_TEMP/pins")" -ne 3; then
+            echo '::error::Expected 3 pinned release URLs in workflow-lint.yml; update this check to match.'
+            exit 1
+          fi
+          latest() {
+            for attempt in 1 2 3; do
+              gh release view --repo "$1" --json tagName,publishedAt \
+                --jq '"\(.tagName) \(.publishedAt)"' < /dev/null && return
+              test "$attempt" -eq 3 || sleep $((attempt * 10))
+            done
+            return 1
+          }
+          cutoff="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          outdated=0
+          while read -r repo pin; do
+            if ! release="$(latest "$repo")"; then
+              echo "::error::Could not read the latest release of $repo; this is not a tool update."
+              exit 1
+            fi
+            read -r tag published <<< "$release"
+            newest="$(printf '%s\n%s\n' "$pin" "$tag" | sort -V | tail -n 1)"
+            if test "$tag" = "$pin" || test "$newest" = "$pin"; then
+              echo "$repo $pin is current (latest release $tag)."
+            elif [[ "$published" > "$cutoff" ]]; then
+              echo "::notice::$repo released $tag on $published; it is flagged 7 days after release."
+            else
+              echo "::error::$repo released $tag on $published; workflow-lint.yml pins $pin. See CONTRIBUTING.md to update it."
+              outdated=1
+            fi
+          done < "$RUNNER_TEMP/pins"
+          exit "$outdated"
