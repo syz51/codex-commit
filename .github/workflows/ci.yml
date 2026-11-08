@@ -78,6 +78,44 @@ jobs:
             target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The repository allows only GitHub-owned actions, so download pinned
+      # release binaries. Update each version together with its SHA-256.
+      - name: Install actionlint, ShellCheck, and zizmor
+        env:
+          LINT_BIN: ${{ runner.temp }}/workflow-lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$LINT_BIN"
+          cd "$LINT_BIN"
+          fetch() {
+            curl -fsSL --retry 3 -o "$2" "$1"
+            echo "$3  $2" | sha256sum -c -
+          }
+          fetch https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            actionlint.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            shellcheck.tar.xz 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          fetch https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz \
+            zizmor.tar.gz bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
+          tar -xzf actionlint.tar.gz actionlint
+          tar -xJf shellcheck.tar.xz --strip-components=1 shellcheck-v0.11.0/shellcheck
+          tar -xzf zizmor.tar.gz zizmor
+      - name: Lint workflows
+        env:
+          LINT_BIN: ${{ runner.temp }}/workflow-lint
+        run: |
+          "$LINT_BIN/actionlint" -color -shellcheck "$LINT_BIN/shellcheck"
+          "$LINT_BIN/zizmor" --offline --format github .github/workflows
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
