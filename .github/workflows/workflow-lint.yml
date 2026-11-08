@@ -29,6 +29,7 @@ jobs:
           persist-credentials: false
       # The action allowlist holds no lint actions, and Dependabot does not
       # track these downloads: update each version together with its SHA-256.
+      # The weekly Lint tool updates workflow fails when a newer release exists.
       - name: Install actionlint, ShellCheck, and zizmor
         id: install
         shell: bash

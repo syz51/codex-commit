@@ -1,0 +1,45 @@
+name: Lint tool updates
+
+# Dependabot does not see the tool downloads in workflow-lint.yml, so this
+# weekly run fails when a pinned tool has a newer release. Update that tool's
+# URL and SHA-256 in workflow-lint.yml, and its version in CONTRIBUTING.md.
+on:
+  schedule:
+    # Mondays 10:17 JST (01:17 UTC).
+    - cron: '17 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check for newer lint tool releases
+    if: github.repository == 'syz51/codex-commit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compare each pinned tool with its latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -oE 'https://github\.com/[^/]+/[^/]+/releases/download/[^/]+/' .github/workflows/workflow-lint.yml |
+            sort -u > "$RUNNER_TEMP/pins"
+          # Fail rather than pass quietly if the download URLs change shape.
+          test "$(wc -l < "$RUNNER_TEMP/pins")" -eq 3
+          outdated=0
+          while IFS=/ read -r _ _ _ owner repo _ _ tag _; do
+            latest="$(gh release view --repo "$owner/$repo" --json tagName --jq .tagName)"
+            if test "$latest" = "$tag"; then
+              echo "$owner/$repo $tag is the latest release."
+            else
+              echo "::error::$owner/$repo released $latest; workflow-lint.yml pins $tag. Update its URL and SHA-256."
+              outdated=1
+            fi
+          done < "$RUNNER_TEMP/pins"
+          exit "$outdated"
