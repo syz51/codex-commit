@@ -112,14 +112,16 @@ jobs:
           git apply --index "$RUNNER_TEMP/release/release.patch"
           test "$(git diff --cached --name-only | LC_ALL=C sort | tr '\n' ' ')" = 'CHANGELOG.md Cargo.lock Cargo.toml README.md '
           bot_id="$(gh api "users/$APP_SLUG%5Bbot%5D" --jq .id)"
-          git config user.name "$APP_SLUG[bot]"
-          git config user.email "$bot_id+$APP_SLUG[bot]@users.noreply.github.com"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "$bot_id+${APP_SLUG}[bot]@users.noreply.github.com"
           git commit -m "Release $tag"
           head="$(git rev-parse HEAD)"
           gh auth setup-git --hostname github.com
           # The branch belongs to this workflow: replace yesterday's unmerged release.
           previous="$(git ls-remote origin "refs/heads/$RELEASE_BRANCH" | cut -f1)"
           git push --force-with-lease="refs/heads/$RELEASE_BRANCH:$previous" origin "HEAD:refs/heads/$RELEASE_BRANCH"
+          # Backticks in these printf formats are Markdown code spans.
+          # shellcheck disable=SC2016
           {
             printf 'Daily release of `main` at %s.\n\n## Changes\n\n' "$BASE"
             cat "$RUNNER_TEMP/release/notes.md"

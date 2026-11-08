@@ -1,0 +1,6 @@
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      # GitHub accepts `queue` in job concurrency (the v0.6.8 release ran with
+      # it), but actionlint 1.7.12 does not know the key yet.
+      - 'unexpected key "queue" for "concurrency" section'

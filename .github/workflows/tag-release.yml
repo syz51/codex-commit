@@ -127,8 +127,8 @@ jobs:
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           bot_id="$(gh api "users/$APP_SLUG%5Bbot%5D" --jq .id)"
-          git config user.name "$APP_SLUG[bot]"
-          git config user.email "$bot_id+$APP_SLUG[bot]@users.noreply.github.com"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "$bot_id+${APP_SLUG}[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_TAG" -m "$RELEASE_TAG" "$RELEASE_SHA"
           gh auth setup-git --hostname github.com
           tagged() {
