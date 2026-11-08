@@ -1,0 +1,67 @@
+name: Workflow lint
+
+# A separate workflow, not a CI job: Tag release follows CI runs, and a lint
+# failure or a failed tool download must never hold back a release tag. It is
+# not a required check, so the path filter cannot block a merge.
+on:
+  push:
+    branches: [main]
+    paths: ['.github/**']
+  pull_request:
+    paths: ['.github/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The action allowlist holds no lint actions, and Dependabot does not
+      # track these downloads: update each version together with its SHA-256.
+      - name: Install actionlint, ShellCheck, and zizmor
+        id: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/workflow-lint"
+          mkdir -p "$bin"
+          cd "$bin"
+          fetch() {
+            curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 -o "$2" "$1"
+            echo "$3  $2" | sha256sum -c -
+          }
+          fetch https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            actionlint.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          fetch https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            shellcheck.tar.xz 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          fetch https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz \
+            zizmor.tar.gz bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
+          tar -xzf actionlint.tar.gz actionlint
+          tar -xJf shellcheck.tar.xz --strip-components=1 shellcheck-v0.11.0/shellcheck
+          tar -xzf zizmor.tar.gz zizmor
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: Run actionlint with ShellCheck
+        run: |
+          test "$(command -v shellcheck)" = "$RUNNER_TEMP/workflow-lint/shellcheck"
+          # The format is a Go template that prints GitHub error annotations.
+          # shellcheck disable=SC2016
+          actionlint -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}\n{{end}}'
+      # Runs after an actionlint failure too, so one push reports both.
+      - name: Run zizmor
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          # Online audits check that each pinned SHA matches its tag and
+          # is not a known-vulnerable or impostor commit.
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format github .github/workflows
