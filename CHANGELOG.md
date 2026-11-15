@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Run independent read-only Git queries concurrently: the repository and branch preflight, the dirty-tree status and numstat inspection, and the `finalize` checks before and after the commit. Each group joins all children before reporting, and error precedence is unchanged.
+- Document the implicit state machines, their gaps and the hot-path measurements in `docs/state-machines.md`.
+
 ## 0.6.8
 
 - Update `toml` to 1.1.8, enabling its `std`, `serde` and `parse` features explicitly, and `signal-hook` to 0.4.5.

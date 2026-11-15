@@ -635,6 +635,88 @@ fn collector_git_failure_stops_before_codex_or_scratch_creation() {
     }));
 }
 
+#[test]
+fn preflight_and_inspection_overlap_independent_git_queries() {
+    let fixture = Fixture::new();
+    fs::write(fixture.repo.join("new.txt"), "new work\n").unwrap();
+    // Each query waits until its peers have started, so sequential calls
+    // would time out with status 99 instead of completing.
+    let wrapper = fixture.bin.join("git");
+    fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+role=
+for argument do
+    case "$argument" in
+    rev-parse) role=repository; peers=branch ;;
+    symbolic-ref) role=branch; peers=repository ;;
+    status) role=status; peers="staged unstaged" ;;
+    diff) role=unstaged; peers="status staged" ;;
+    --cached) role=staged; peers="status unstaged" ;;
+    esac
+done
+[ -n "$role" ] || exec "$REAL_GIT" "$@"
+: > "$OVERLAP_SYNC/$role.started"
+for peer in $peers; do
+    attempt=0
+    while [ ! -f "$OVERLAP_SYNC/$peer.started" ]; do
+        attempt=$((attempt + 1))
+        [ "$attempt" -lt 200 ] || exit 99
+        /bin/sleep 0.01
+    done
+done
+exec "$REAL_GIT" "$@"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = fixture
+        .command(cli())
+        .env("REAL_GIT", real_git())
+        .env("OVERLAP_SYNC", &fixture.root)
+        .arg("--dry-run")
+        .bounded_output()
+        .unwrap();
+    assert_code(&output, 0);
+    for role in ["repository", "branch", "status", "staged", "unstaged"] {
+        assert!(fixture.root.join(format!("{role}.started")).exists());
+    }
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains(&format!("Repository: {}\n", fixture.repo.display())));
+    assert!(stdout.contains("Branch: main\n"));
+    assert!(stdout.contains("new.txt"));
+}
+
+#[test]
+fn preflight_reports_each_unsuitable_repository_with_its_own_message() {
+    let fixture = Fixture::new();
+    let bare = fixture.root.join("bare.git");
+    fixture.git(&["init", "--bare", bare.to_str().unwrap()]);
+    let git_directory = fixture.repo.join(".git");
+    for (directory, message) in [
+        (&fixture.root, "run inside a Git repository or use -C DIR"),
+        (&bare, "a bare repository has no working tree"),
+        (&git_directory, "could not find the Git working tree"),
+    ] {
+        let output = fixture
+            .command(cli())
+            .current_dir(directory)
+            .arg("--dry-run")
+            .bounded_output()
+            .unwrap();
+        assert_code(&output, 1);
+        assert_eq!(
+            text(&output.stderr).trim(),
+            format!("codex-commit: {message}")
+        );
+    }
+    fixture.git(&["checkout", "--detach"]);
+    let output = fixture.invoke(&["--dry-run"]);
+    assert_code(&output, 1);
+    assert!(text(&output.stderr).contains("detached HEAD"));
+    assert!(!fixture.log.exists());
+}
+
 fn write_config(path: &Path, source: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, source).unwrap();

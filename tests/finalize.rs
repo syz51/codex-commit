@@ -280,6 +280,91 @@ fn hooks_and_commit_failures_are_not_bypassed_or_retried() {
 }
 
 #[test]
+fn independent_git_queries_overlap_and_report_only_the_first_failure() {
+    let real = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join("git"))
+        .find(|path| path.is_file())
+        .unwrap();
+    // Each query waits until its peers have started, so sequential calls
+    // would time out with status 99 instead of completing.
+    let wrapper = |fixture: &Fixture, fail_branch: bool| {
+        let bin = fixture.root.join("overlap-bin");
+        fs::create_dir(&bin).unwrap();
+        let fake = bin.join("git");
+        fs::write(
+            &fake,
+            r#"#!/bin/sh
+role=
+case "$1 $2" in
+"symbolic-ref "*) role=branch; peers="unmerged staged" ;;
+"ls-files "*) role=unmerged; peers="branch staged" ;;
+"diff "*) role=staged; peers="branch unmerged" ;;
+"rev-parse --verify") role=head; peers=status ;;
+"status "*) role=status; peers=head ;;
+esac
+[ -n "$role" ] || exec "$REAL_GIT" "$@"
+: > "$OVERLAP_SYNC/$role.started"
+for peer in $peers; do
+    attempt=0
+    while [ ! -f "$OVERLAP_SYNC/$peer.started" ]; do
+        attempt=$((attempt + 1))
+        [ "$attempt" -lt 200 ] || exit 99
+        /bin/sleep 0.01
+    done
+done
+if [ "$FAIL_QUERIES" = 1 ]; then
+    case "$role" in
+    branch) echo "branch diagnostic" >&2; exit 31 ;;
+    unmerged) echo "unmerged diagnostic" >&2; exit 32 ;;
+    esac
+fi
+exec "$REAL_GIT" "$@"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = env::join_paths(
+            std::iter::once(bin).chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
+        )
+        .unwrap();
+        let mut command = fixture.finalize(&["tracked".into()]);
+        command
+            .env("PATH", path)
+            .env("REAL_GIT", &real)
+            .env("OVERLAP_SYNC", &fixture.root)
+            .env("FAIL_QUERIES", if fail_branch { "1" } else { "0" });
+        command.output().unwrap()
+    };
+
+    let fixture = Fixture::new();
+    fs::write(fixture.repo.join("tracked"), "changed\n").unwrap();
+    fixture.stage(&["tracked".into()]);
+    let output = wrapper(&fixture, false);
+    success(output.clone());
+    for role in ["branch", "unmerged", "staged", "head", "status"] {
+        assert!(fixture.root.join(format!("{role}.started")).exists());
+    }
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    assert!(
+        output
+            .stdout
+            .ends_with(&[b"Commit: ".as_slice(), &head].concat())
+    );
+
+    let fixture = Fixture::new();
+    fs::write(fixture.repo.join("tracked"), "changed\n").unwrap();
+    fixture.stage(&["tracked".into()]);
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    let output = wrapper(&fixture, true);
+    assert_eq!(output.status.code(), Some(31));
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("branch diagnostic"));
+    assert!(diagnostic.contains("git symbolic-ref failed"));
+    assert!(!diagnostic.contains("unmerged diagnostic"));
+    assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+}
+
+#[test]
 fn post_commit_reporting_failure_reports_that_head_already_advanced() {
     let fixture = Fixture::new();
     fs::write(fixture.repo.join("tracked"), "changed\n").unwrap();
