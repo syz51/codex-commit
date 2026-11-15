@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.9
+
 - Add an optional run limit: `--timeout-secs SECONDS` and the `timeout_secs` configuration key stop Codex through the cancellation path and exit with status 124. The default stays no limit.
 - Run independent read-only Git queries concurrently: the repository and branch preflight, the dirty-tree status and numstat inspection, and the `finalize` checks before and after the commit. Each group joins all children before reporting, and error precedence is unchanged.
 - Document the implicit state machines, their gaps and the hot-path measurements in `docs/state-machines.md`.
