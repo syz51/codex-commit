@@ -348,15 +348,19 @@ pub(crate) fn command_error(program: &str, error: io::Error) -> CliError {
     }
 }
 
-fn git(directory: &Path, args: &[&str], failure: &str) -> Result<Vec<u8>, CliError> {
-    let output = Command::new("git")
+fn git_output(directory: &Path, args: &[&str]) -> Result<std::process::Output, CliError> {
+    Command::new("git")
         .arg("-C")
         .arg(directory)
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .map_err(|error| command_error("git", error))?;
+        .map_err(|error| command_error("git", error))
+}
+
+fn git(directory: &Path, args: &[&str], failure: &str) -> Result<Vec<u8>, CliError> {
+    let output = git_output(directory, args)?;
     if !output.status.success() {
         return Err(CliError::new(1, failure));
     }
@@ -367,14 +371,10 @@ fn git(directory: &Path, args: &[&str], failure: &str) -> Result<Vec<u8>, CliErr
 /// bare answer before `--show-toplevel` can fail, so each failure keeps its
 /// own message.
 fn working_tree_root(directory: &Path) -> Result<PathBuf, CliError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(["rev-parse", "--is-bare-repository", "--show-toplevel"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|error| command_error("git", error))?;
+    let output = git_output(
+        directory,
+        &["rev-parse", "--is-bare-repository", "--show-toplevel"],
+    )?;
     let Some(root) = output.stdout.strip_prefix(b"false\n") else {
         return Err(CliError::new(
             1,

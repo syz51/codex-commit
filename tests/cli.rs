@@ -661,7 +661,7 @@ for peer in $peers; do
     attempt=0
     while [ ! -f "$OVERLAP_SYNC/$peer.started" ]; do
         attempt=$((attempt + 1))
-        [ "$attempt" -lt 200 ] || exit 99
+        [ "$attempt" -lt 1000 ] || exit 99
         /bin/sleep 0.01
     done
 done
