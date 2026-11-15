@@ -717,6 +717,70 @@ fn preflight_reports_each_unsuitable_repository_with_its_own_message() {
     assert!(!fixture.log.exists());
 }
 
+#[test]
+fn run_limit_stops_an_idle_agent_with_status_124_and_removes_scratch() {
+    for flags in [&[][..], &["--verbose"], &["--interactive"]] {
+        for ignore_cancellation in [false, true] {
+            let fixture = Fixture::new();
+            let mut command = fixture.command(cli());
+            command
+                .args(flags)
+                .args(["--timeout-secs", "1"])
+                .env("FAKE_CODEX_MODE", "wait");
+            if ignore_cancellation {
+                command.env("FAKE_CODEX_IGNORE_CANCELLATION", "1");
+            }
+            let start = Instant::now();
+            let output = command.bounded_output().expect("run CLI");
+            let elapsed = start.elapsed();
+            assert_code(&output, 124);
+            assert!(
+                text(&output.stderr).contains(
+                    "codex-commit: Codex did not finish within 1 seconds; it was stopped"
+                ),
+                "{}",
+                text(&output.stderr)
+            );
+            assert!(elapsed >= Duration::from_secs(1), "{elapsed:?}");
+            assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+            let invocation = fixture.invocation();
+            assert_eq!(
+                kill(Pid::from_raw(invocation.pid as i32), None),
+                Err(Errno::ESRCH)
+            );
+            invocation.assert_scratch_removed();
+        }
+    }
+}
+
+#[test]
+fn run_limit_is_off_by_default_and_merges_config_with_cli() {
+    let fixture = Fixture::new();
+    let output = fixture.invoke(&["--timeout-secs", "60"]);
+    assert_code(&output, 0);
+    let output = fixture.invoke(&["--dry-run"]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("\nTimeout: none\n"));
+
+    let config = fixture.root.join("limit.toml");
+    write_config(&config, "timeout_secs = 7\n");
+    let config = config.to_str().unwrap();
+    let output = fixture.invoke(&["--dry-run", "--config", config]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("\nTimeout: 7 seconds\n"));
+    let output = fixture.invoke(&["--dry-run", "--config", config, "--timeout-secs", "9"]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("\nTimeout: 9 seconds\n"));
+
+    let output = fixture.invoke(&["--dry-run", "--timeout-secs", "0"]);
+    assert_code(&output, 2);
+    let zero = fixture.root.join("zero.toml");
+    write_config(&zero, "timeout_secs = 0\n");
+    let output = fixture.invoke(&["--dry-run", "--config", zero.to_str().unwrap()]);
+    assert_code(&output, 2);
+    assert!(text(&output.stderr).contains("invalid config"));
+}
+
 fn write_config(path: &Path, source: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, source).unwrap();

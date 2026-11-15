@@ -125,6 +125,7 @@ pub(crate) fn run(
     scratch: TaskScratch,
     mode: OutputMode,
     mut signals: PreparedSignals,
+    timeout: Option<Duration>,
 ) -> Result<i32, CliError> {
     // Darwin does not reliably distinguish tty-generated signals from kill in
     // siginfo. Keep a stable attachment policy instead of consulting a changing
@@ -167,6 +168,10 @@ pub(crate) fn run(
     let mut events = signals.events.take().expect("prepared signal intake");
     let original = std::mem::take(&mut signals.original);
     drop(signals);
+    // A limit too large for the clock is no limit.
+    let run_deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let reaper_timed_out = Arc::clone(&timed_out);
     let child_pid = Pid::from_raw(child.id() as i32);
     // Compact mode uses the child PID as its isolated process-group ID.
     let target = Arc::new(Mutex::new(Some(child_pid)));
@@ -315,6 +320,19 @@ pub(crate) fn run(
                 let mut stopped = false;
                 {
                     let mut target = reaper_target.lock().expect("signal target lock");
+                    if run_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                        && reaper_cancellation.load(Ordering::Acquire) == 0
+                        && !reaper_timed_out.swap(true, Ordering::AcqRel)
+                    {
+                        // The limit ends the run through the cancellation path:
+                        // ask first, then force after the same grace period.
+                        let _ = send_to_child(child_pid, Signal::SIGTERM, mode);
+                        let _ = send_to_child(child_pid, Signal::SIGCONT, mode);
+                        *cancellation_deadline
+                            .lock()
+                            .expect("cancellation deadline lock") =
+                            Some(Instant::now() + CANCELLATION_GRACE);
+                    }
                     if cancellation_deadline
                         .lock()
                         .expect("cancellation deadline lock")
@@ -398,7 +416,7 @@ pub(crate) fn run(
             if let Ok(signal) = Signal::try_from(cancelled) {
                 reraise(signal)?;
             }
-        } else if mode == OutputMode::Direct {
+        } else if mode == OutputMode::Direct && !reaper_timed_out.load(Ordering::Acquire) {
             if let Ok(status) = &waited {
                 if let Some(signal) = status
                     .signal()
@@ -434,6 +452,9 @@ pub(crate) fn run(
         let code = status
             .code()
             .unwrap_or_else(|| 128 + status.signal().unwrap_or(1));
+        if let Some(timeout) = timeout.filter(|_| code != 0 && timed_out.load(Ordering::Acquire)) {
+            return finish_with_cleanup(Err(timeout_error(timeout)), cleanup);
+        }
         return match cleanup {
             Ok(()) => Ok(code),
             Err(mut error) => {
@@ -492,6 +513,10 @@ pub(crate) fn run(
             format!("Codex exited with status {code}"),
         ));
     }
+    if let Some(timeout) = timeout.filter(|_| code != 0 && timed_out.load(Ordering::Acquire)) {
+        let _ = renderer.finish(false);
+        return finish_with_cleanup(Err(timeout_error(timeout)), cleanup);
+    }
     let cleanup_failed = cleanup.is_err();
     let outcome = (|| {
         result.map_err(|e| {
@@ -523,6 +548,17 @@ pub(crate) fn run(
         }
     })();
     finish_with_cleanup(outcome, cleanup).map(|()| 0)
+}
+
+/// Status 124 matches `timeout(1)`, so callers can tell a limit from a failure.
+fn timeout_error(timeout: Duration) -> CliError {
+    CliError::new(
+        124,
+        format!(
+            "Codex did not finish within {} seconds; it was stopped",
+            timeout.as_secs()
+        ),
+    )
 }
 
 fn send_to_child(child: Pid, signal: Signal, mode: OutputMode) -> nix::Result<()> {
@@ -700,7 +736,7 @@ mod tests {
             command.args(["-c", "touch \"$TMPDIR/must-not-launch\""]);
             kill(getpid(), Signal::SIGTERM).unwrap();
             wait_for_signal(&signals);
-            let _ = run(command, scratch, OutputMode::Direct, signals);
+            let _ = run(command, scratch, OutputMode::Direct, signals, None);
             panic!("startup cancellation must terminate before launching Codex");
         }
 

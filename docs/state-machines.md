@@ -14,7 +14,7 @@ All probes and measures used the mock Codex example or a shell stub. No model ra
 | 2 | Repository preflight | `src/cli.rs` | G1, G2 confirmed |
 | 3 | Inspection status collapse | `src/inspection.rs` | G3 by design |
 | 4 | Startup signal phase | `src/process.rs` | none |
-| 5 | Supervisor run and cancellation | `src/process.rs` | G4 confirmed |
+| 5 | Supervisor run and cancellation | `src/process.rs` | G4 confirmed, then closed |
 | 6 | Task scratch directory | `src/scratch.rs` | G5 by design |
 | 7 | Compact renderer turn state | `src/output.rs` | G6 by design |
 | 8 | `finalize` verify-then-commit | `src/finalize.rs` | G7 by design |
@@ -59,11 +59,11 @@ All probes and measures used the mock Codex example or a shell stub. No model ra
 
 ## 5. Supervisor run and cancellation
 
-- States: `running` → `cancelling` (first signal forwarded, 250 ms grace) → `forced` (`SIGKILL`) → `reaped` → `cleaned` → `exit`. Direct modes also have `stopped` (after `SIGTSTP`) → `running` (after `SIGCONT`).
+- States: `running` → `cancelling` (first signal forwarded or run limit reached, 250 ms grace) → `forced` (`SIGKILL`) → `reaped` → `cleaned` → `exit`. Direct modes also have `stopped` (after `SIGTSTP`) → `running` (after `SIGCONT`).
 - Transitions: the first cancellation wins with `compare_exchange(0, signal)` (`src/process.rs:222`). The grace period is `CANCELLATION_GRACE` (`src/process.rs:21`). A second cancellation forces `SIGKILL` at once (`src/process.rs:228`). The reaper thread escalates after the deadline, reaps Codex and closes the scratch (`src/process.rs:309`-`387`). Compact mode owns the process group; direct modes target only the Codex PID. The exit status keeps the first signal.
 - Enforcement: `compact_cancellation_bounds_unresponsive_codex_shutdown` (under 2 s), `compact_cancels_stopped_agent_and_preserves_first_signal_on_repeat`, `compact_exits_when_detached_descendant_retains_pipes`, `compact_blocked_progress_cancellation_reaps_owned_processes`, `direct_targeted_cancellation_is_bounded_without_rewriting_terminal_modes`, and the real-shell job-control tests in `tests/cli.rs`.
 - Gaps:
-  - **G4, confirmed: a commit-mode run has no time limit.** Probe: the mock in `wait` mode. The wrapper was still alive after 6 s with an idle agent and ended only on `SIGTERM` (exit 143, scratch removed). `generate` has a 120 s default limit; commit modes have none. An unattended caller, such as a script or a scheduled job, can wait without end. This is an owner decision on the interface.
+  - **G4, confirmed, then closed: a commit-mode run had no time limit.** Probe: the mock in `wait` mode. The wrapper was still alive after 6 s with an idle agent and ended only on `SIGTERM` (exit 143, scratch removed). The owner chose an optional limit, default off. `--timeout-secs` and the `timeout_secs` configuration key now end the run through the same path: `SIGTERM`, the 250 ms grace, `SIGKILL`, cleanup, then exit status 124. Test: `run_limit_stops_an_idle_agent_with_status_124_and_removes_scratch`.
 
 ## 6. Task scratch directory
 
