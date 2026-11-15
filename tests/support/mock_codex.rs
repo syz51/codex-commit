@@ -15,6 +15,7 @@ use std::time::Duration;
 
 static CHILD: AtomicI32 = AtomicI32::new(0);
 static RESUMED: AtomicBool = AtomicBool::new(false);
+static EXIT_ZERO_ON_CANCEL: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn resumed(_: i32) {
     RESUMED.store(true, Ordering::Release);
@@ -57,7 +58,11 @@ extern "C" fn cancelled(signal: i32) {
                 }
             }
         }
-        libc::_exit(128 + signal);
+        libc::_exit(if EXIT_ZERO_ON_CANCEL.load(Ordering::SeqCst) {
+            0
+        } else {
+            128 + signal
+        });
     }
 }
 
@@ -101,6 +106,11 @@ fn checked_git(args: &[&str]) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Models an agent that traps cancellation and reports success.
+    EXIT_ZERO_ON_CANCEL.store(
+        env::var_os("FAKE_CODEX_EXIT_ZERO_ON_CANCEL").is_some(),
+        Ordering::SeqCst,
+    );
     let action = SigAction::new(
         SigHandler::Handler(cancelled),
         SaFlags::empty(),

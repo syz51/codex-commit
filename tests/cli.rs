@@ -717,6 +717,148 @@ fn preflight_reports_each_unsuitable_repository_with_its_own_message() {
     assert!(!fixture.log.exists());
 }
 
+#[test]
+fn run_limit_stops_an_idle_agent_with_status_124_and_removes_scratch() {
+    for flags in [&[][..], &["--verbose"], &["--interactive"]] {
+        // An agent that ignores the request is forced; one that traps it and
+        // exits 0 was still stopped before it finished.
+        for agent in [
+            "",
+            "FAKE_CODEX_IGNORE_CANCELLATION",
+            "FAKE_CODEX_EXIT_ZERO_ON_CANCEL",
+        ] {
+            let fixture = Fixture::new();
+            let mut command = fixture.command(cli());
+            command
+                .args(flags)
+                .args(["--timeout-secs", "1"])
+                .env("FAKE_CODEX_MODE", "wait");
+            if !agent.is_empty() {
+                command.env(agent, "1");
+            }
+            let start = Instant::now();
+            let output = command.bounded_output().expect("run CLI");
+            let elapsed = start.elapsed();
+            assert_code(&output, 124);
+            assert!(
+                text(&output.stderr).contains(
+                    "codex-commit: Codex did not finish within 1 seconds; it was stopped"
+                ),
+                "{}",
+                text(&output.stderr)
+            );
+            assert!(elapsed >= Duration::from_secs(1), "{elapsed:?}");
+            assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+            let invocation = fixture.invocation();
+            assert_eq!(
+                kill(Pid::from_raw(invocation.pid as i32), None),
+                Err(Errno::ESRCH)
+            );
+            invocation.assert_scratch_removed();
+        }
+    }
+}
+
+#[test]
+fn run_limit_ends_the_wrapper_when_its_output_is_blocked() {
+    let fixture = Fixture::new();
+    // Nothing reads this pipe, so the large progress line blocks the wrapper.
+    let (read, write) = nix::unistd::pipe().unwrap();
+    let child = fixture
+        .command(cli())
+        .args(["--timeout-secs", "2"])
+        .env("FAKE_CODEX_MODE", "wait")
+        .env("FAKE_CODEX_LARGE_PROGRESS", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(write))
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut guard = CapturedChild {
+        child,
+        reaped: false,
+        agent_log: Some(fixture.log.clone()),
+    };
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let status = loop {
+        if let Some(status) = guard.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the limit must end a wrapper with blocked output"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    guard.reaped = true;
+    drop(read);
+    assert_eq!(status.code(), Some(124));
+    let invocation = fixture.invocation();
+    assert_eq!(
+        kill(Pid::from_raw(invocation.pid as i32), None),
+        Err(Errno::ESRCH)
+    );
+    invocation.assert_scratch_removed();
+}
+
+#[test]
+fn cancellation_before_the_run_limit_keeps_the_signal_status() {
+    let fixture = Fixture::new();
+    let child = fixture
+        .command(cli())
+        .args(["--timeout-secs", "60"])
+        .env("FAKE_CODEX_MODE", "wait")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut guard = CapturedChild {
+        child,
+        reaped: false,
+        agent_log: Some(fixture.log.clone()),
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fixture.log.exists() {
+        assert!(Instant::now() < deadline, "the agent must start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    kill(Pid::from_raw(guard.child.id() as i32), Signal::SIGTERM).unwrap();
+    let status = guard.child.wait().unwrap();
+    guard.reaped = true;
+    assert_eq!(shell_status(status), 143);
+}
+
+#[test]
+fn run_limit_is_off_by_default_and_merges_config_with_cli() {
+    let fixture = Fixture::new();
+    let output = fixture.invoke(&["--timeout-secs", "60"]);
+    assert_code(&output, 0);
+    let output = fixture.invoke(&["--dry-run"]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("\nTimeout: none\n"));
+
+    let config = fixture.root.join("limit.toml");
+    write_config(&config, "timeout_secs = 7\n");
+    let config = config.to_str().unwrap();
+    let output = fixture.invoke(&["--dry-run", "--config", config]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("\nTimeout: 7 seconds\n"));
+    let output = fixture.invoke(&["--dry-run", "--config", config, "--timeout-secs", "9"]);
+    assert_code(&output, 0);
+    assert!(text(&output.stdout).contains("\nTimeout: 9 seconds\n"));
+
+    let output = fixture.invoke(&["--dry-run", "--timeout-secs", "0"]);
+    assert_code(&output, 2);
+    let zero = fixture.root.join("zero.toml");
+    write_config(&zero, "timeout_secs = 0\n");
+    let output = fixture.invoke(&["--dry-run", "--config", zero.to_str().unwrap()]);
+    assert_code(&output, 2);
+    assert!(text(&output.stderr).contains("invalid config"));
+}
+
 fn write_config(path: &Path, source: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, source).unwrap();

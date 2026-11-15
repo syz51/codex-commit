@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -104,6 +105,7 @@ struct Config {
     profile: Option<String>,
     sandbox: Option<Sandbox>,
     approval_policy: Option<ApprovalPolicy>,
+    timeout_secs: Option<std::num::NonZeroU64>,
 }
 
 fn default_config_path() -> Option<PathBuf> {
@@ -172,6 +174,9 @@ fn cli() -> clap::Command {
             .help("Override Codex's configured approval policy for this run"))
         .arg(Arg::new("profile").short('p').long("profile").value_name("NAME")
             .help("Select a Codex configuration profile"))
+        .arg(Arg::new("timeout-secs").long("timeout-secs").value_name("SECONDS")
+            .value_parser(value_parser!(std::num::NonZeroU64))
+            .help("Stop Codex and exit with status 124 after this many seconds (default: no limit)"))
         .arg(Arg::new("config").long("config").value_name("PATH")
             .value_parser(value_parser!(PathBuf)).value_hint(ValueHint::FilePath)
             .conflicts_with("no-config").help("Read this configuration file instead of the global default"))
@@ -179,7 +184,7 @@ fn cli() -> clap::Command {
             .help("Ignore codex-commit configuration files"))
         .arg(Arg::new("completions").long("completions").value_name("SHELL")
             .value_parser(value_parser!(clap_complete::Shell))
-            .conflicts_with_all(["directory", "push", "dry-run", "interactive", "verbose", "sandbox", "approval", "profile", "config", "no-config", "model", "reasoning-effort", "instructions"])
+            .conflicts_with_all(["directory", "push", "dry-run", "interactive", "verbose", "sandbox", "approval", "profile", "config", "no-config", "model", "reasoning-effort", "timeout-secs", "instructions"])
             .help("Print a shell completion script without launching Codex"))
         .arg(Arg::new("instructions").value_name("INSTRUCTIONS").num_args(0..)
             .trailing_var_arg(true).value_parser(value_parser!(OsString))
@@ -227,6 +232,7 @@ struct Options {
     sandbox: Option<Sandbox>,
     approval: Option<ApprovalPolicy>,
     profile: Option<String>,
+    timeout: Option<Duration>,
     config_path: Option<PathBuf>,
     instructions: String,
 }
@@ -244,6 +250,7 @@ impl Default for Options {
             sandbox: None,
             approval: None,
             profile: None,
+            timeout: None,
             config_path: None,
             instructions: String::new(),
         }
@@ -314,6 +321,11 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Invocation, CliErro
             .get_one::<String>("profile")
             .cloned()
             .or(config.profile),
+        timeout: matches
+            .get_one::<std::num::NonZeroU64>("timeout-secs")
+            .copied()
+            .or(config.timeout_secs)
+            .map(|seconds| Duration::from_secs(seconds.get())),
         config_path,
         instructions: join_instructions(
             matches
@@ -507,7 +519,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliEr
 
     if options.dry_run {
         println!(
-            "Repository: {}\nBranch: {branch}\nMode: {mode}\nOutput: {}\nPush: {push_status}\nModel: {model}\nReasoning: {reasoning_effort}\nService tier: default\nNative delegation: disabled\nConfig: {}\nProfile: {}\nSandbox override: {}\nApproval: {}\n\n{prompt}",
+            "Repository: {}\nBranch: {branch}\nMode: {mode}\nOutput: {}\nPush: {push_status}\nModel: {model}\nReasoning: {reasoning_effort}\nService tier: default\nNative delegation: disabled\nConfig: {}\nProfile: {}\nSandbox override: {}\nApproval: {}\nTimeout: {}\n\n{prompt}",
             root.display(),
             if options.interactive || options.verbose {
                 "direct"
@@ -532,6 +544,10 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliEr
                 } else {
                     "Codex exec (no human approval prompts)"
                 }),
+            options
+                .timeout
+                .map(|timeout| format!("{} seconds", timeout.as_secs()))
+                .unwrap_or_else(|| "none".to_owned()),
         );
         return Ok(0);
     }
@@ -603,7 +619,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliEr
     } else {
         crate::process::OutputMode::Compact
     };
-    crate::process::run(command, scratch, output_mode, signals)
+    crate::process::run(command, scratch, output_mode, signals, options.timeout)
 }
 
 #[cfg(test)]
