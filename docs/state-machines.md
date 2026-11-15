@@ -3,7 +3,7 @@
 This document lists the implicit state machines in this repository, as audited in November 2026.
 Each machine gives its states, its transitions, the code that enforces them, and its gaps.
 Each gap has a verdict from a probe or a test: **confirmed**, **by design**, or **refuted**.
-Line references are correct for the commit that added this document.
+Line references are correct for the commit that last changed this document.
 All probes and measures used the mock Codex example or a shell stub. No model ran.
 
 ## Summary
@@ -29,18 +29,18 @@ All probes and measures used the mock Codex example or a shell stub. No model ra
 ## 1. Invocation and configuration
 
 - States: `Display` (help, version), `Completions`, `Task`. For `Task`: configuration is `none`, `default file` or `explicit file`.
-- Transitions: `parse` selects the invocation (`src/cli.rs:253`). `default_config_path` accepts only absolute bases (`src/cli.rs:109`). `load_config` ignores a missing default file and fails on a missing explicit file (`src/cli.rs:122`). CLI options override the file, field by field. `on-request` approval needs `--interactive` (`src/cli.rs:286`).
+- Transitions: `parse` selects the invocation (`src/cli.rs:260`). `default_config_path` accepts only absolute bases (`src/cli.rs:111`). `load_config` ignores a missing default file and fails on a missing explicit file (`src/cli.rs:124`). CLI options override the file, field by field. `on-request` approval needs `--interactive` (`src/cli.rs:290`).
 - Enforcement: all configuration errors return before any Git or Codex process starts. Test: `config_failures_are_reported_before_git_or_codex` in `tests/cli.rs`.
 - Gaps: none found.
 
 ## 2. Repository preflight
 
 - States: `unchecked` → `repository resolved` and `branch resolved` → `inspected` → `dry-run printed` or `identity checked` → `launch`.
-- Transitions: one `git rev-parse --is-bare-repository --show-toplevel` call resolves the working tree (`src/cli.rs:373`). It runs at the same time as `git symbolic-ref` (`src/cli.rs:480`). Both children are joined before an error returns. A repository error has precedence over a detached HEAD. A dirty tree then starts two concurrent `git var` identity checks (`src/cli.rs:429`).
+- Transitions: one `git rev-parse --is-bare-repository --show-toplevel` call resolves the working tree (`src/cli.rs:385`). It runs at the same time as `git symbolic-ref` (`src/cli.rs:492`). Both children are joined before an error returns. A repository error has precedence over a detached HEAD. A dirty tree then starts two concurrent `git var` identity checks (`src/cli.rs:441`).
 - Enforcement: tests `preflight_and_inspection_overlap_independent_git_queries`, `preflight_reports_each_unsuitable_repository_with_its_own_message`, `invalid_args_and_unsuitable_repositories_do_not_launch_codex`, `identity_preflight_overlaps_roles_and_joins_before_signal_error`.
 - Gaps:
-  - **G1, confirmed: a preflight failure loses Git's reason.** Both preflight Git calls discard stderr in `git_output` (`src/cli.rs:351`). `working_tree_root` and `git()` then map each failure to a fixed message (`src/cli.rs:373`, `src/cli.rs:362`). Probe: a repository with a broken `.git/config`. Git says `fatal: bad config line 11 in file .git/config`. The wrapper says `run inside a Git repository or use -C DIR`. The same cause also makes `symbolic-ref` report `detached HEAD`. Inspection keeps the Git exit status but also discards stderr (`src/inspection.rs:188`): an unreadable index gives `Git inspection failed: git status ... (exit status: 128)` without Git's `Permission denied` text.
-  - **G2, confirmed: preflight Git calls have no time limit, and a signal sent only to the wrapper leaves the Git child running.** Signal handlers are installed after preflight (`src/cli.rs:586`). Probe: a Git stub that sleeps 6 s in `status`. The wrapper still waited after 3 s. After `SIGTERM` to the wrapper, the wrapper exited with 143 and the Git child stayed alive until its own end. A terminal Ctrl-C reaches the full foreground group, so that path has no orphan.
+  - **G1, confirmed: a preflight failure loses Git's reason.** Both preflight Git calls discard stderr in `git_output` (`src/cli.rs:363`). `working_tree_root` and `git()` then map each failure to a fixed message (`src/cli.rs:385`, `src/cli.rs:374`). Probe: a repository with a broken `.git/config`. Git says `fatal: bad config line 11 in file .git/config`. The wrapper says `run inside a Git repository or use -C DIR`. The same cause also makes `symbolic-ref` report `detached HEAD`. Inspection keeps the Git exit status but also discards stderr (`src/inspection.rs:188`): an unreadable index gives `Git inspection failed: git status ... (exit status: 128)` without Git's `Permission denied` text.
+  - **G2, confirmed: preflight Git calls have no time limit, and a signal sent only to the wrapper leaves the Git child running.** Signal handlers are installed after preflight (`src/cli.rs:602`). Probe: a Git stub that sleeps 6 s in `status`. The wrapper still waited after 3 s. After `SIGTERM` to the wrapper, the wrapper exited with 143 and the Git child stayed alive until its own end. A terminal Ctrl-C reaches the full foreground group, so that path has no orphan.
 
 ## 3. Inspection status collapse
 
@@ -53,17 +53,17 @@ All probes and measures used the mock Codex example or a shell stub. No model ra
 ## 4. Startup signal phase
 
 - States: `default dispositions` → `startup` (handlers installed, first cancellation stored) → `supervising`.
-- Transitions: `prepare_signals` installs the handlers and stores the first cancellation with `compare_exchange` (`src/process.rs:62`, `:103`). `run` closes the scratch and returns the signal status when a cancellation arrived before spawn (`src/process.rs:135`). `finish_startup` hands the stored signal to the supervisor (`src/process.rs:40`, `:166`).
-- Enforcement: the unit test at `src/process.rs:677` and the cancellation tests of machine 5.
+- Transitions: `prepare_signals` installs the handlers and stores the first cancellation with `compare_exchange` (`src/process.rs:64`, `:105`). `run` closes the scratch and returns the signal status when a cancellation arrived before spawn (`src/process.rs:138`). `finish_startup` hands the stored signal to the supervisor (`src/process.rs:42`, `:169`).
+- Enforcement: the unit test at `src/process.rs:720` and the cancellation tests of machine 5.
 - Gaps: none found. The time before this phase is gap G2.
 
 ## 5. Supervisor run and cancellation
 
 - States: `running` → `cancelling` (first signal forwarded or run limit reached, 250 ms grace) → `forced` (`SIGKILL`) → `reaped` → `cleaned` → `exit`. Direct modes also have `stopped` (after `SIGTSTP`) → `running` (after `SIGCONT`).
-- Transitions: the first cancellation wins with `compare_exchange(0, signal)` (`src/process.rs:222`). The grace period is `CANCELLATION_GRACE` (`src/process.rs:21`). A second cancellation forces `SIGKILL` at once (`src/process.rs:228`). The reaper thread escalates after the deadline, reaps Codex and closes the scratch (`src/process.rs:309`-`387`). Compact mode owns the process group; direct modes target only the Codex PID. The exit status keeps the first signal.
+- Transitions: the first cancellation wins with `compare_exchange(0, signal)` (`src/process.rs:230`). The grace period is `CANCELLATION_GRACE` (`src/process.rs:23`). A second cancellation forces `SIGKILL` at once (`src/process.rs:236`). The reaper thread escalates after the deadline, reaps Codex and closes the scratch (`src/process.rs:318`-`414`). Compact mode owns the process group; direct modes target only the Codex PID. The exit status keeps the first signal.
 - Enforcement: `compact_cancellation_bounds_unresponsive_codex_shutdown` (under 2 s), `compact_cancels_stopped_agent_and_preserves_first_signal_on_repeat`, `compact_exits_when_detached_descendant_retains_pipes`, `compact_blocked_progress_cancellation_reaps_owned_processes`, `direct_targeted_cancellation_is_bounded_without_rewriting_terminal_modes`, and the real-shell job-control tests in `tests/cli.rs`.
 - Gaps:
-  - **G4, confirmed, then closed: a commit-mode run had no time limit.** Probe: the mock in `wait` mode. The wrapper was still alive after 6 s with an idle agent and ended only on `SIGTERM` (exit 143, scratch removed). The owner chose an optional limit, default off. `--timeout-secs` and the `timeout_secs` configuration key now end the run through the same path: `SIGTERM`, the 250 ms grace, `SIGKILL`, cleanup, then exit status 124. Test: `run_limit_stops_an_idle_agent_with_status_124_and_removes_scratch`.
+  - **G4, confirmed, then closed: a commit-mode run had no time limit.** Probe: the mock in `wait` mode. The wrapper was still alive after 6 s with an idle agent and ended only on `SIGTERM` (exit 143, scratch removed). The owner chose an optional limit, default off. `--timeout-secs` and the `timeout_secs` configuration key now end the run through the same path: `SIGTERM`, the 250 ms grace, `SIGKILL`, cleanup, then exit status 124 (`src/process.rs:174`). The reaper thread ends the wrapper itself, so blocked output cannot hold it. A signal before the limit keeps the signal status. Tests: `run_limit_stops_an_idle_agent_with_status_124_and_removes_scratch`, `run_limit_ends_the_wrapper_when_its_output_is_blocked`, `cancellation_before_the_run_limit_keeps_the_signal_status`.
 
 ## 6. Task scratch directory
 
@@ -164,7 +164,7 @@ Method: release build, macOS, Git 2.56. Two fixture repositories: `small` (60 fi
 | Site | Measure | Reason |
 | --- | --- | --- |
 | Supervisor polling (5, 10 and 25 ms loops in `src/process.rs`) | About 12 ms of a 34.9 ms mock run | A real model run takes many seconds (`docs/PERFORMANCE.md`). |
-| Identity checks | Already concurrent (`src/cli.rs:429`) | Pinned by test. |
+| Identity checks | Already concurrent (`src/cli.rs:441`) | Pinned by test. |
 | `make install`, warm build | 0.11 s total; each `--completions` call 2.3 ms | The build dominates. |
 | `cargo xtask release-tag` | 75 ms; `cargo metadata` 22 ms | Runs once for each CI completion. |
 | `cargo xtask prepare-release` | 0.31 s warm, 1.08 s cold | Runs once a day in CI. |

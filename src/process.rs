@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Matches `timeout(1)`, so callers can tell a limit from a failure.
+const TIMEOUT_STATUS: i32 = 124;
 const CANCELLATION_GRACE: Duration = Duration::from_millis(250);
 
 const MAX_EVENT: u64 = 16 * 1024 * 1024;
@@ -172,6 +174,7 @@ pub(crate) fn run(
     let run_deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
     let timed_out = Arc::new(AtomicBool::new(false));
     let reaper_timed_out = Arc::clone(&timed_out);
+    let forwarded_timed_out = Arc::clone(&timed_out);
     let child_pid = Pid::from_raw(child.id() as i32);
     // Compact mode uses the child PID as its isolated process-group ID.
     let target = Arc::new(Mutex::new(Some(child_pid)));
@@ -257,6 +260,7 @@ pub(crate) fn run(
             if signal == Signal::SIGTSTP
                 && mode == OutputMode::Compact
                 && forwarded_cancellation.load(Ordering::Acquire) == 0
+                && !forwarded_timed_out.load(Ordering::Acquire)
             {
                 // Stop the supervisor only after its owned group has received
                 // suspension. SIGCONT will resume both.
@@ -320,19 +324,6 @@ pub(crate) fn run(
                 let mut stopped = false;
                 {
                     let mut target = reaper_target.lock().expect("signal target lock");
-                    if run_deadline.is_some_and(|deadline| Instant::now() >= deadline)
-                        && reaper_cancellation.load(Ordering::Acquire) == 0
-                        && !reaper_timed_out.swap(true, Ordering::AcqRel)
-                    {
-                        // The limit ends the run through the cancellation path:
-                        // ask first, then force after the same grace period.
-                        let _ = send_to_child(child_pid, Signal::SIGTERM, mode);
-                        let _ = send_to_child(child_pid, Signal::SIGCONT, mode);
-                        *cancellation_deadline
-                            .lock()
-                            .expect("cancellation deadline lock") =
-                            Some(Instant::now() + CANCELLATION_GRACE);
-                    }
                     if cancellation_deadline
                         .lock()
                         .expect("cancellation deadline lock")
@@ -384,8 +375,26 @@ pub(crate) fn run(
                         reaper_shutdown.store(true, Ordering::Release);
                         return Ok(status);
                     }
+                    // Checked only after a wait found Codex still running, so
+                    // an exit just before the limit keeps its own status.
+                    if run_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                        && reaper_cancellation.load(Ordering::Acquire) == 0
+                        && !reaper_timed_out.swap(true, Ordering::AcqRel)
+                    {
+                        // The limit ends the run through the cancellation path:
+                        // ask first, then force after the same grace period.
+                        let _ = send_to_child(child_pid, Signal::SIGTERM, mode);
+                        let _ = send_to_child(child_pid, Signal::SIGCONT, mode);
+                        *cancellation_deadline
+                            .lock()
+                            .expect("cancellation deadline lock") =
+                            Some(Instant::now() + CANCELLATION_GRACE);
+                    }
                 }
-                if stopped && reaper_cancellation.load(Ordering::Acquire) == 0 {
+                if stopped
+                    && reaper_cancellation.load(Ordering::Acquire) == 0
+                    && !reaper_timed_out.load(Ordering::Acquire)
+                {
                     // The shell owns foreground groups and terminal modes;
                     // it receives this wrapper stop alongside its stopped child.
                     let _ = kill(getpid(), Signal::SIGSTOP);
@@ -416,7 +425,23 @@ pub(crate) fn run(
             if let Ok(signal) = Signal::try_from(cancelled) {
                 reraise(signal)?;
             }
-        } else if mode == OutputMode::Direct && !reaper_timed_out.load(Ordering::Acquire) {
+        } else if let Some(timeout) = timeout.filter(|_| reaper_timed_out.load(Ordering::Acquire)) {
+            // Like cancellation, the limit must end the wrapper even when its
+            // output is blocked, so this thread reports and exits itself.
+            if let Err(error) = &cleanup {
+                report_cancelled_cleanup(error);
+            }
+            report_cancelled_cleanup(&CliError::new(
+                TIMEOUT_STATUS,
+                format!(
+                    "Codex did not finish within {} seconds; it was stopped",
+                    timeout.as_secs()
+                ),
+            ));
+            // SAFETY: `_exit` is async-signal-safe and takes no locks. Codex is
+            // reaped, the scratch is closed and the dispositions are restored.
+            unsafe { nix::libc::_exit(TIMEOUT_STATUS) };
+        } else if mode == OutputMode::Direct {
             if let Ok(status) = &waited {
                 if let Some(signal) = status
                     .signal()
@@ -452,9 +477,6 @@ pub(crate) fn run(
         let code = status
             .code()
             .unwrap_or_else(|| 128 + status.signal().unwrap_or(1));
-        if let Some(timeout) = timeout.filter(|_| code != 0 && timed_out.load(Ordering::Acquire)) {
-            return finish_with_cleanup(Err(timeout_error(timeout)), cleanup);
-        }
         return match cleanup {
             Ok(()) => Ok(code),
             Err(mut error) => {
@@ -513,10 +535,6 @@ pub(crate) fn run(
             format!("Codex exited with status {code}"),
         ));
     }
-    if let Some(timeout) = timeout.filter(|_| code != 0 && timed_out.load(Ordering::Acquire)) {
-        let _ = renderer.finish(false);
-        return finish_with_cleanup(Err(timeout_error(timeout)), cleanup);
-    }
     let cleanup_failed = cleanup.is_err();
     let outcome = (|| {
         result.map_err(|e| {
@@ -548,17 +566,6 @@ pub(crate) fn run(
         }
     })();
     finish_with_cleanup(outcome, cleanup).map(|()| 0)
-}
-
-/// Status 124 matches `timeout(1)`, so callers can tell a limit from a failure.
-fn timeout_error(timeout: Duration) -> CliError {
-    CliError::new(
-        124,
-        format!(
-            "Codex did not finish within {} seconds; it was stopped",
-            timeout.as_secs()
-        ),
-    )
 }
 
 fn send_to_child(child: Pid, signal: Signal, mode: OutputMode) -> nix::Result<()> {
