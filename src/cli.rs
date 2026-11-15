@@ -348,19 +348,49 @@ pub(crate) fn command_error(program: &str, error: io::Error) -> CliError {
     }
 }
 
-fn git(directory: &Path, args: &[&str], failure: &str) -> Result<Vec<u8>, CliError> {
-    let output = Command::new("git")
+fn git_output(directory: &Path, args: &[&str]) -> Result<std::process::Output, CliError> {
+    Command::new("git")
         .arg("-C")
         .arg(directory)
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .map_err(|error| command_error("git", error))?;
+        .map_err(|error| command_error("git", error))
+}
+
+fn git(directory: &Path, args: &[&str], failure: &str) -> Result<Vec<u8>, CliError> {
+    let output = git_output(directory, args)?;
     if !output.status.success() {
         return Err(CliError::new(1, failure));
     }
     Ok(without_final_newline(output.stdout))
+}
+
+/// Resolve the working tree root with one Git call. `rev-parse` prints the
+/// bare answer before `--show-toplevel` can fail, so each failure keeps its
+/// own message.
+fn working_tree_root(directory: &Path) -> Result<PathBuf, CliError> {
+    let output = git_output(
+        directory,
+        &["rev-parse", "--is-bare-repository", "--show-toplevel"],
+    )?;
+    let Some(root) = output.stdout.strip_prefix(b"false\n") else {
+        return Err(CliError::new(
+            1,
+            if output.stdout.is_empty() {
+                "run inside a Git repository or use -C DIR"
+            } else {
+                "a bare repository has no working tree"
+            },
+        ));
+    };
+    if !output.status.success() {
+        return Err(CliError::new(1, "could not find the Git working tree"));
+    }
+    Ok(PathBuf::from(OsString::from_vec(without_final_newline(
+        root.to_vec(),
+    ))))
 }
 
 fn without_final_newline(mut output: Vec<u8>) -> Vec<u8> {
@@ -444,24 +474,25 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliEr
         Invocation::Task(options) => options,
     };
 
-    let bare = git(
-        &options.directory,
-        &["rev-parse", "--is-bare-repository"],
-        "run inside a Git repository or use -C DIR",
-    )?;
-    if bare != b"false" {
-        return Err(CliError::new(1, "a bare repository has no working tree"));
-    }
-    let root = PathBuf::from(OsString::from_vec(git(
-        &options.directory,
-        &["rev-parse", "--show-toplevel"],
-        "could not find the Git working tree",
-    )?));
-    let branch = OsString::from_vec(git(
-        &root,
-        &["symbolic-ref", "--quiet", "--short", "HEAD"],
-        "detached HEAD: switch to a branch before running codex-commit",
-    )?);
+    // The repository query and the branch query are independent: overlap
+    // them, and join both before an error returns so no Git child outlives
+    // preflight. Repository errors keep precedence over a detached HEAD.
+    let (root, branch) = std::thread::scope(|scope| {
+        let branch = scope.spawn(|| {
+            git(
+                &options.directory,
+                &["symbolic-ref", "--quiet", "--short", "HEAD"],
+                "detached HEAD: switch to a branch before running codex-commit",
+            )
+        });
+        let root = working_tree_root(&options.directory);
+        let branch = branch
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (root, branch)
+    });
+    let root = root?;
+    let branch = OsString::from_vec(branch?);
     let branch = branch.to_string_lossy();
     let mode = if options.interactive {
         "interactive"

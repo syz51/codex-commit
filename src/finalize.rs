@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Output};
 
 fn cli() -> Cli {
     Cli::new("codex-commit finalize")
@@ -27,22 +27,43 @@ fn status_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
 }
 
-fn git_output(directory: &Path, args: &[&str]) -> Result<Vec<u8>, CliError> {
-    let output = Command::new("git")
+fn git_run(directory: &Path, args: &[&str]) -> Result<Output, CliError> {
+    Command::new("git")
         .current_dir(directory)
         .args(args)
         .output()
-        .map_err(|error| CliError::new(1, format!("could not run git {}: {error}", args[0])))?;
+        .map_err(|error| CliError::new(1, format!("could not run git {}: {error}", args[0])))
+}
+
+/// Report a failed Git call with its own diagnostics and exit status.
+fn checked(command: &str, output: Output) -> Result<Vec<u8>, CliError> {
     if !output.status.success() {
         io::stderr()
             .write_all(&output.stderr)
             .map_err(|error| CliError::new(1, format!("could not report Git failure: {error}")))?;
         return Err(CliError::new(
             status_code(output.status),
-            format!("git {} failed", args[0]),
+            format!("git {command} failed"),
         ));
     }
     Ok(output.stdout)
+}
+
+/// Run independent read-only Git calls at the same time. Every child is
+/// joined before the results return, in the order of `calls`, so the caller
+/// checks them in that order and reports only the first failure.
+fn git_overlapped<const N: usize>(
+    directory: &Path,
+    calls: [&[&str]; N],
+) -> [Result<Output, CliError>; N] {
+    std::thread::scope(|scope| {
+        calls
+            .map(|args| scope.spawn(move || git_run(directory, args)))
+            .map(|call| {
+                call.join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+    })
 }
 
 pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliError> {
@@ -88,10 +109,19 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliEr
     let directory = matches
         .get_one::<PathBuf>("directory")
         .expect("default directory");
-    if git_output(directory, &["rev-parse", "--is-bare-repository"])? != b"false\n" {
+    // `rev-parse` prints the bare answer before `--show-toplevel` can fail.
+    let repository = git_run(
+        directory,
+        &["rev-parse", "--is-bare-repository", "--show-toplevel"],
+    )?;
+    if repository.stdout.starts_with(b"true\n") {
         return Err(CliError::new(1, "a bare repository has no working tree"));
     }
-    let mut root = git_output(directory, &["rev-parse", "--show-toplevel"])?;
+    let repository = checked("rev-parse", repository)?;
+    let mut root = repository
+        .strip_prefix(b"false\n")
+        .unwrap_or_default()
+        .to_vec();
     if root.pop() != Some(b'\n') || root.is_empty() {
         return Err(CliError::new(
             1,
@@ -99,27 +129,32 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliEr
         ));
     }
     let root = PathBuf::from(OsString::from_vec(root));
-    git_output(&root, &["symbolic-ref", "--quiet", "HEAD"])?;
-    if !git_output(&root, &["ls-files", "--unmerged", "-z"])?.is_empty() {
+    let [branch, unmerged, staged] = git_overlapped(
+        &root,
+        [
+            &["symbolic-ref", "--quiet", "HEAD"],
+            &["ls-files", "--unmerged", "-z"],
+            &[
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--no-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=none",
+                "--no-color",
+            ],
+        ],
+    );
+    checked("symbolic-ref", branch?)?;
+    if !checked("ls-files", unmerged?)?.is_empty() {
         return Err(CliError::new(
             1,
             "index has unmerged entries; commit not attempted",
         ));
     }
-    let staged = git_output(
-        &root,
-        &[
-            "diff",
-            "--cached",
-            "--name-only",
-            "-z",
-            "--no-renames",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--ignore-submodules=none",
-            "--no-color",
-        ],
-    )?;
+    let staged = checked("diff", staged?)?;
     if staged.last() != Some(&0) {
         return Err(CliError::new(
             1,
@@ -154,8 +189,19 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<i32, CliEr
             ),
         )
     };
-    let head = git_output(&root, &["rev-parse", "--verify", "HEAD"]).map_err(report_failure)?;
-    let status = git_output(&root, &["status", "--porcelain=v1"]).map_err(report_failure)?;
+    let [head, status] = git_overlapped(
+        &root,
+        [
+            &["rev-parse", "--verify", "HEAD"],
+            &["status", "--porcelain=v1"],
+        ],
+    );
+    let head = head
+        .and_then(|output| checked("rev-parse", output))
+        .map_err(report_failure)?;
+    let status = status
+        .and_then(|output| checked("status", output))
+        .map_err(report_failure)?;
     let mut stdout = io::stdout().lock();
     stdout
         .write_all(b"Commit: ")

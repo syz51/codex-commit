@@ -46,26 +46,47 @@ fn collect_with_limit(root: &Path, status_limit: usize) -> Result<RepositoryOver
             format!("could not resolve repository for inspection: {error}"),
         )
     })?;
-    let mut status = git(
-        &root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        status_limit,
-    )?;
-    let status_collapsed = status.1;
-    if status.1 {
-        status = git(
-            &root,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
-            status_limit,
-        )?;
-    }
-    if status.1 {
-        return Err(CliError::new(
-            1,
-            "Git status exceeds the inspection limit even with untracked directories collapsed",
-        ));
-    }
-    let changes = parse_status(&status.0)?;
+    // Status and both numstats are independent read-only Git calls: overlap
+    // them, and join every child before an error returns so none outlives
+    // inspection. Errors keep the sequential order: status, staged, unstaged.
+    let (status, staged, unstaged) = std::thread::scope(|scope| {
+        let staged = scope.spawn(|| {
+            git(
+                &root,
+                &[
+                    "diff",
+                    "--cached",
+                    "--numstat",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                ],
+                16 * 1024,
+            )
+        });
+        let unstaged = scope.spawn(|| {
+            git(
+                &root,
+                &[
+                    "diff",
+                    "--numstat",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                ],
+                16 * 1024,
+            )
+        });
+        let status = status_with_limit(&root, status_limit);
+        let join = |handle: std::thread::ScopedJoinHandle<'_, _>| {
+            handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        };
+        (status, join(staged), join(unstaged))
+    });
+    let (status, status_collapsed) = status?;
+    let changes = parse_status(&status)?;
     let instructions = instruction_candidates(&root, &changes);
     let (change_values, changes_omitted) = bounded_values(
         changes.iter().map(|change| {
@@ -103,31 +124,8 @@ fn collect_with_limit(root: &Path, status_limit: usize) -> Result<RepositoryOver
             .map(|(path, error)| json!({ "path": path_value(path), "error": error })),
         ERROR_BUDGET,
     );
-    let staged = git(
-        &root,
-        &[
-            "diff",
-            "--cached",
-            "--numstat",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-color",
-        ],
-        16 * 1024,
-    )?;
-    let unstaged = git(
-        &root,
-        &[
-            "diff",
-            "--numstat",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-color",
-        ],
-        16 * 1024,
-    )?;
-    let staged = bounded_stat(staged);
-    let unstaged = bounded_stat(unstaged);
+    let staged = bounded_stat(staged?);
+    let unstaged = bounded_stat(unstaged?);
     let raw_paths = change_values.iter().any(|value| {
         value["path"].is_object() || value.get("original_path").is_some_and(Value::is_object)
     }) || instruction_values.iter().any(Value::is_object)
@@ -158,6 +156,31 @@ fn collect_with_limit(root: &Path, status_limit: usize) -> Result<RepositoryOver
         dirty: !changes.is_empty(),
         context,
     })
+}
+
+/// Full status, retried with untracked directories collapsed when it exceeds
+/// the limit. The flag reports whether the collapsed form was used.
+fn status_with_limit(root: &Path, limit: usize) -> Result<(Vec<u8>, bool), CliError> {
+    let full = git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        limit,
+    )?;
+    if !full.1 {
+        return Ok((full.0, false));
+    }
+    let collapsed = git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+        limit,
+    )?;
+    if collapsed.1 {
+        return Err(CliError::new(
+            1,
+            "Git status exceeds the inspection limit even with untracked directories collapsed",
+        ));
+    }
+    Ok((collapsed.0, true))
 }
 
 /// Drain Git output even after the display limit so genuine command failures

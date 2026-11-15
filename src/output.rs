@@ -234,6 +234,21 @@ mod tests {
     }
 
     #[test]
+    fn failed_turn_stays_failed_when_a_later_turn_completes() {
+        let (success, out, err) = render(&[
+            json!({"type":"turn.started"}),
+            json!({"type":"turn.failed","error":{"message":"model unavailable"}}),
+            json!({"type":"turn.started"}),
+            message("Recovered"),
+            json!({"type":"turn.completed"}),
+        ]);
+        assert!(!success);
+        assert!(out.is_empty());
+        assert!(err.contains("model unavailable"));
+        assert!(err.contains("Recovered"));
+    }
+
+    #[test]
     fn failed_commands_retain_exact_diagnostics_even_when_turn_recovers() {
         let (success, _, err) = render(&[
             json!({"type":"item.completed","item":{"type":"command_execution","command":"git push","status":"completed","exit_code":128,"aggregated_output":"fatal: authentication failed\n"}}),
