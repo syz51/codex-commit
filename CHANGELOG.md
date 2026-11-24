@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.10
+
+- Bump the rust-dependencies group across 1 directory with 3 updates (#35)
+
 ## 0.6.9
 
 - Add an optional run limit: `--timeout-secs SECONDS` and the `timeout_secs` configuration key stop Codex through the cancellation path and exit with status 124. The default stays no limit.
